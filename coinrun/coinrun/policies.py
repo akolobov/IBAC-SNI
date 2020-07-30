@@ -134,6 +134,7 @@ class CnnPolicy(object):
             h, h_vf, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
+            self.h = h
 
             # Noisy policy and value function for train
             if Config.BETA >= 0:
@@ -206,10 +207,16 @@ class CnnPolicy(object):
         def value(ob, update_frac, *_args, **_kwargs):
             return sess.run(self.vf_run, {X: ob})
 
+        # Helper function to get the representation embedding from a given
+        # observation
+        def rep_vec(ob, *_args, **_kwargs):
+            return sess.run(self.h, {X: ob})
+
         self.X = X
         self.processed_x = processed_x
         self.step = step
         self.value = value
+        self.rep_vec = rep_vec
 
 
 def get_policy():

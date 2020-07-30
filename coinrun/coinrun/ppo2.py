@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import tensorflow as tf
 from collections import deque
+import gym3
 
 from mpi4py import MPI
 
@@ -21,6 +22,20 @@ from baselines.common.runners import AbstractEnvRunner
 from baselines.common.tf_util import initialize
 from baselines.common.mpi_util import sync_from_root
 from tensorflow.python.ops.ragged.ragged_util import repeat
+
+
+def custom_loss(traj_one, traj_two, k=1):
+    """ Implementation of the custom loss, designed to measure the distance between two
+    trajectories in the latent representation space of states within the policy network
+    Args:
+        k: Integer. A hyperparameter used to determine the number of timesteps that we compute the loss
+        for within the trajectories
+        traj_one, traj_two: Numpy Arrays. The two trajectories that we compute the loss over with
+        horizon 'n'
+    Returns:
+        cst_loss: Float. Value of our custom loss
+    """
+    pass
 
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
@@ -72,6 +87,7 @@ class Model(object):
         OLDVPRED = tf.placeholder(tf.float32, [None])
         LR = tf.placeholder(tf.float32, [])
         CLIPRANGE = tf.placeholder(tf.float32, [])
+        REP_LOSS = tf.placeholder(tf.float32)
 
         # VF loss
         vpred = train_model.vf_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
@@ -150,7 +166,7 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
+        loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + REP_LOSS
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -166,7 +182,7 @@ class Model(object):
 
         _train = trainer.apply_gradients(grads_and_var)
 
-        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
+        def train(rep_loss, lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
 
             adv_mean = np.mean(advs, axis=0, keepdims=True)
@@ -174,7 +190,7 @@ class Model(object):
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
             td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, REP_LOSS:rep_loss}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -200,6 +216,7 @@ class Model(object):
         self.act_model = act_model
         self.step = act_model.step
         self.value = act_model.value
+        self.rep_vec = act_model.rep_vec
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
@@ -243,6 +260,27 @@ class Runner(AbstractEnvRunner):
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(rewards)
+        
+        # REP LOSS MODIFICATIONS
+        # implement loss. keep track of prior state, then sample
+        # two actions from that state, and computer l_2 between
+        # observations seen as rep loss
+
+        # need to convert baselines env to gym3
+        # so 'get-state' method works
+        states = self.env.callmethod("get_state")
+        rand_a_1 = np.random.randint(self.env.action_space.n, size=actions.shape)
+        obs_1, _, _, _ = self.env.step(rand_a_1)
+        self.env.callmethod("set_state", states)
+        rand_a_2 = np.random.randint(self.env.action_space.n, size=actions.shape)
+        obs_2, _, _, _ = self.env.step(rand_a_2)
+        self.env.callmethod("set_state", states)
+        rep_vec_1 = self.model.rep_vec(obs_1)
+        rep_vec_2 = self.model.rep_vec(obs_2)
+        rep_norm = tf.norm(rep_vec_1 - rep_vec_2, ord='euclidean')
+        print('rep loss is', rep_norm.eval())
+        # REP LOSS MODIFICATIONS
+
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -251,7 +289,6 @@ class Runner(AbstractEnvRunner):
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, update_frac, self.states, self.dones)
-
         # discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
@@ -268,7 +305,7 @@ class Runner(AbstractEnvRunner):
         mb_returns = mb_advs + mb_values
 
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
-            mb_states, epinfos)
+            mb_states, epinfos), rep_norm
 
 def sf01(arr):
     """
@@ -284,7 +321,7 @@ def constfn(val):
     return f
 
 
-def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
+def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=False,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None):
@@ -356,7 +393,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
 
-        obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run(update_frac=update/nupdates)
+        packed, rep_norm = runner.run(update_frac=update/nupdates)
+        obs, returns, masks, actions, values, neglogpacs, states, epinfos = packed
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
 
@@ -377,7 +415,10 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 end = start + nbatch_train
                 mbinds = inds[start:end]
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                mblossvals.append(model.train(lrnow, cliprangenow, *slices))
+                rep_loss = 0
+                if rep_loss_bool:
+                    rep_loss = rep_norm.eval()
+                mblossvals.append(model.train(rep_loss, lrnow, cliprangenow, *slices))
 
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])

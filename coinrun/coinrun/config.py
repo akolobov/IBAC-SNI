@@ -8,8 +8,8 @@ class ConfigSingle(object):
     keyword arguments.
     """
     def __init__(self):
-        self.WORKDIR = '/home/patmac/results-cr/saved_models'
-        self.TB_DIR = '/home/patmac/results-cr/tb_log'
+        self.WORKDIR = '/home/ahmed/results-cr/saved_models'
+        self.TB_DIR = '/home/ahmed/results-cr/tb_log'
         if not os.path.exists(self.WORKDIR):
             os.makedirs(self.WORKDIR, exist_ok=True)
 
@@ -46,6 +46,9 @@ class ConfigSingle(object):
 
         # Short training for 25M time steps
         bool_keys.append(('short', 'short_training'))
+
+        # Bool for using the custom representation loss, if the flag is passed then the loss will be used
+        bool_keys.append(('rep_loss', 'custom_rep_loss'))
 
         # Beta value for Info-loss KL divergence. -1 leaves this loss term out. 0 will probably diverge
         type_keys.append(('b', 'beta', float, -1., True))

@@ -122,13 +122,16 @@ Batchnorm is `-norm 1`, Dropout is `--dropout 0.2`, VIB is `--beta 0.0001`, L2 o
 `--beta-l2a 0.0001` which corresponds to VIB-SNI with `lambda=1`. Using `--sni` switches on SNI for IBAC with `lambda=0.5`.  The number of samples for MC averages when computing the loss is set by `--nr_samples <num>` For dropout, we can either use SNI
 with `lambda=0.5` by using `--sni2` or with `lambda=1.0` by using `--openai`.
 
-Set the environment with `--env <env>`.  The number of levels in the training set is specified with `--num-levels <num>`.
+Set the environment with `--env <env>`.  The number of levels in the training set is specified with `--num-levels <num>`,
+and you can train on the entire level distribution by setting this flag to 0.
 
 Using `--long` runs for 200M time steps and `--short` runs for 25M time steps.  The experiments, especially with the `--long` flag, take a while. If it's run on the VMs, it will
 likely crash at some point (around 6pm is particularly likely), probably because the servers are
 preemtible.
 If they do, you can restart with the additional arguments `--restore-id <run-id>` and
 `--restore-step <step>` where you can read out the step from the tensor-board plot.
+
+To use try out the custom representation loss, simply add in the flag `--rep_loss`
 
 
 ## Plotting
