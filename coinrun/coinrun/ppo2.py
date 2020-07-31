@@ -322,7 +322,7 @@ def constfn(val):
 
 
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=False,
-            vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
+            rep_lambda=1, vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None):
     comm = MPI.COMM_WORLD
@@ -418,7 +418,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
                 rep_loss = 0
                 if rep_loss_bool:
                     rep_loss = rep_norm.eval()
-                mblossvals.append(model.train(rep_loss, lrnow, cliprangenow, *slices))
+                mblossvals.append(model.train(rep_loss*rep_lambda, lrnow, cliprangenow, *slices))
 
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])

@@ -131,7 +131,8 @@ preemtible.
 If they do, you can restart with the additional arguments `--restore-id <run-id>` and
 `--restore-step <step>` where you can read out the step from the tensor-board plot.
 
-To use try out the custom representation loss, simply add in the flag `--rep_loss`
+To use try out the custom representation loss, simply add in the flag `--rep_loss`. If you want to specify a weight to this loss, pass
+a number in the interval (0, 1] to `--rep_lambda`, otherwise the default weight is 1.
 
 
 ## Plotting

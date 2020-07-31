@@ -156,6 +156,8 @@ def main():
 
     venv = VecNormalize(venv=venv, ob=False)
     
+    rep_lambda = Config.REP_LOSS_WEIGHT
+    print('weight is', rep_lambda)
     rep_loss = False
     if Config.CUSTOM_REP_LOSS:
         rep_loss = True
@@ -181,7 +183,8 @@ def main():
                     lr=lambda f : f * Config.LEARNING_RATE,
                     cliprange=lambda f : f * 0.2,
                     total_timesteps=total_timesteps,
-                    rep_loss_bool=rep_loss)
+                    rep_loss_bool=rep_loss,
+                    rep_lambda=rep_lambda)
 
 if __name__ == '__main__':
     main()
