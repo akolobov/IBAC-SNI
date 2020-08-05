@@ -24,18 +24,48 @@ from baselines.common.mpi_util import sync_from_root
 from tensorflow.python.ops.ragged.ragged_util import repeat
 
 
-def custom_loss(traj_one, traj_two, k=1):
+def custom_loss(pos_state, rep_model, env, actions_shape, a_n, m=1):
     """ Implementation of the custom loss, designed to measure the distance between two
     trajectories in the latent representation space of states within the policy network
     Args:
-        k: Integer. A hyperparameter used to determine the number of timesteps that we compute the loss
-        for within the trajectories
-        traj_one, traj_two: Numpy Arrays. The two trajectories that we compute the loss over with
-        horizon 'n'
+        pos_state: List of byte strings containing the current state (aka the positive sample) 
+            we wish to sample trajectories from
+        rep_model: tensorflow model that returns the representation encoding for a given observation(s)
+        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
+            class which is defined in train_agent.py
+        actions_shape: Tuple. Used to define the shape of the action array for one timestep for the 
+            current environment
+        a_n: Integer. Used to define a range [0, a_n] actions
+            can take.
+        m: Integer. A hyperparameter used to determine the number of timesteps that we compute the loss
+            for within the trajectories
     Returns:
-        cst_loss: Float. Value of our custom loss
+        loss: Float. Value of our custom loss
     """
-    pass
+    # sample two actions from pos state, and compute l_2 loss between
+    # observations as rep loss
+    # keep representations of trajectories as list of arrays
+    first_traj = []
+    second_traj = []
+    for _ in range(m):
+        rand_a_1 = np.random.randint(a_n, size=actions_shape)
+        obs_1, _, _, _ = env.step(rand_a_1)
+        env.callmethod("set_state", pos_state)
+        rand_a_2 = np.random.randint(a_n, size=actions_shape)
+        obs_2, _, _, _ = env.step(rand_a_2)
+        env.callmethod("set_state", pos_state)
+        rep_vec_1 = rep_model(obs_1)
+        rep_vec_2 = rep_model(obs_2)
+        first_traj.append(rep_vec_1)
+        second_traj.append(rep_vec_2)
+
+    rep_vec_1 = np.stack(first_traj)
+    rep_vec_2 = np.stack(second_traj)
+    diff = rep_vec_1 - rep_vec_2
+    mean_diff = tf.reduce_mean(diff, axis=0)
+    rep_norm = tf.norm(mean_diff, ord='euclidean')
+    print('rep loss is', rep_norm.eval())
+    return rep_norm
 
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
@@ -237,7 +267,7 @@ class Runner(AbstractEnvRunner):
         self.lam = lam
         self.gamma = gamma
 
-    def run(self, update_frac):
+    def run(self, update_frac, rep_loss_m):
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
         mb_states = self.states
@@ -260,27 +290,7 @@ class Runner(AbstractEnvRunner):
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(rewards)
-        
-        # REP LOSS MODIFICATIONS
-        # implement loss. keep track of prior state, then sample
-        # two actions from that state, and computer l_2 between
-        # observations seen as rep loss
-
-        # need to convert baselines env to gym3
-        # so 'get-state' method works
-        states = self.env.callmethod("get_state")
-        rand_a_1 = np.random.randint(self.env.action_space.n, size=actions.shape)
-        obs_1, _, _, _ = self.env.step(rand_a_1)
-        self.env.callmethod("set_state", states)
-        rand_a_2 = np.random.randint(self.env.action_space.n, size=actions.shape)
-        obs_2, _, _, _ = self.env.step(rand_a_2)
-        self.env.callmethod("set_state", states)
-        rep_vec_1 = self.model.rep_vec(obs_1)
-        rep_vec_2 = self.model.rep_vec(obs_2)
-        rep_norm = tf.norm(rep_vec_1 - rep_vec_2, ord='euclidean')
-        print('rep loss is', rep_norm.eval())
-        # REP LOSS MODIFICATIONS
-
+        rep_norm = custom_loss(self.env.callmethod("get_state"), self.model.rep_vec, self.env, actions.shape, self.env.action_space.n, m=rep_loss_m)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -322,7 +332,7 @@ def constfn(val):
 
 
 def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=False,
-            rep_lambda=1, vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
+            rep_lambda=1, rep_loss_m=1, vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None):
     comm = MPI.COMM_WORLD
@@ -393,7 +403,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
 
-        packed, rep_norm = runner.run(update_frac=update/nupdates)
+        packed, rep_norm = runner.run(update_frac=update/nupdates, rep_loss_m=rep_loss_m)
         obs, returns, masks, actions, values, neglogpacs, states, epinfos = packed
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)

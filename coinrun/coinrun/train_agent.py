@@ -137,7 +137,7 @@ def main():
         total_timesteps = int(200e6)
     elif Config.SHORT_TRAINING:
         #total_timesteps = int(120e6)
-        total_timesteps = int(10e6)
+        total_timesteps = int(15e6)
     save_interval = args.save_interval
 
     #env = utils.make_general_env(nenvs, seed=rank)
@@ -157,6 +157,7 @@ def main():
     venv = VecNormalize(venv=venv, ob=False)
     
     rep_lambda = Config.REP_LOSS_WEIGHT
+    m = Config.REP_LOSS_M
     print('weight is', rep_lambda)
     rep_loss = False
     if Config.CUSTOM_REP_LOSS:
@@ -184,7 +185,8 @@ def main():
                     cliprange=lambda f : f * 0.2,
                     total_timesteps=total_timesteps,
                     rep_loss_bool=rep_loss,
-                    rep_lambda=rep_lambda)
+                    rep_lambda=rep_lambda,
+                    rep_loss_m=m)
 
 if __name__ == '__main__':
     main()

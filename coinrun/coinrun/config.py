@@ -9,7 +9,7 @@ class ConfigSingle(object):
     """
     def __init__(self):
         self.WORKDIR = '/home/ahmed/results-cr/saved_models'
-        self.TB_DIR = '/home/ahmed/results-cr/tb_log'
+        self.TB_DIR = '/home/ahmed/results-cr/plunder_rep_no_aug'
         if not os.path.exists(self.WORKDIR):
             os.makedirs(self.WORKDIR, exist_ok=True)
 
@@ -64,6 +64,9 @@ class ConfigSingle(object):
 
         # How many train processes per test process. Defaults to 2
         type_keys.append(('test-ratio', 'test_ratio', int, 4, False))
+
+        # Number of timesteps we want to use for custom loss
+        type_keys.append(('m', 'rep_loss_m', int, 1))
 
         # Deactivated because not needed. To re-activate, uncomment line in main_utils.py as well
         # GPU offset: Use RCALL_NUM_GPU, starting from this value
