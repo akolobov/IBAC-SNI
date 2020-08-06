@@ -9,7 +9,7 @@ class ConfigSingle(object):
     """
     def __init__(self):
         self.WORKDIR = '/home/ahmed/results-cr/saved_models'
-        self.TB_DIR = '/home/ahmed/results-cr/plunder_rep_no_aug'
+        self.TB_DIR = '/home/ahmed/results-cr/tb_log'
         if not os.path.exists(self.WORKDIR):
             os.makedirs(self.WORKDIR, exist_ok=True)
 
