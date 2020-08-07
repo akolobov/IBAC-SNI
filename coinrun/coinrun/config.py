@@ -8,8 +8,8 @@ class ConfigSingle(object):
     keyword arguments.
     """
     def __init__(self):
-        self.WORKDIR = '/home/ahmed/results-cr/saved_models'
-        self.TB_DIR = '/home/ahmed/results-cr/tb_log'
+        self.WORKDIR = './results-procgen/saved_models'
+        self.TB_DIR =  './results-procgen/tb_log'
         if not os.path.exists(self.WORKDIR):
             os.makedirs(self.WORKDIR, exist_ok=True)
 
