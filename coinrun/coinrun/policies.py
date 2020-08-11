@@ -238,7 +238,7 @@ class CnnPolicy(object):
                 
                 pos_diff = tf.reduce_mean(anchor_rep - pos_rep, axis=0)
                 neg_diff = tf.reduce_mean(anchor_rep - neg_rep, axis=0)
-                self.rep_loss = tf.norm(pos_diff, ord='euclidean') - tf.norm(neg_diff, ord='euclidean')
+                self.rep_loss = tf.norm(pos_diff, ord='euclidean') - tf.norm(neg_diff, ord='euclidean')*Config.REP_LOSS_WEIGHT
 
                 
                 grads_and_var = opt.compute_gradients(self.rep_loss, params)
