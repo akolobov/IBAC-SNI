@@ -216,6 +216,8 @@ class Model(object):
 
         def train(rep_loss, lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+            init = tf.global_variables_initializer()
+            sess.run(init)
             advs = returns - values
 
             adv_mean = np.mean(advs, axis=0, keepdims=True)
