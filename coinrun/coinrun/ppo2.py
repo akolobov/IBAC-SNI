@@ -104,7 +104,9 @@ class MpiAdamOptimizer(tf.train.AdamOptimizer):
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
                 nsteps, ent_coef, vf_coef, max_grad_norm):
-        sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+
+        sess = tf.get_default_session()
+
 
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps)
         norm_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -213,6 +215,7 @@ class Model(object):
         _train = trainer.apply_gradients(grads_and_var)
 
         def train(rep_loss, lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
+            sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
             advs = returns - values
 
             adv_mean = np.mean(advs, axis=0, keepdims=True)
@@ -339,7 +342,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
     rank = comm.Get_rank()
     mpi_size = comm.Get_size()
 
-    sess = tf.get_default_session()
+    sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
