@@ -439,6 +439,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
         inds = np.arange(nbatch)
         for _ in range(noptepochs):
             np.random.shuffle(inds)
+            print('train loss loop')
             for start in range(0, nbatch, nbatch_train):
                 sess.run([model.train_model.train_dropout_assign_ops])
                 end = start + nbatch_train
@@ -446,6 +447,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         if rep_loss_bool:
+            print('rep loss loop')
             mean_cust_loss = model.custom_train(anchors, pos_traj, neg_traj)
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
