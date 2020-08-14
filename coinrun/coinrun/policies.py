@@ -226,6 +226,8 @@ class CnnPolicy(object):
             return sess.run(self.act_invariant, {X: ob})
 
         def custom_train(anchors, pos_traj, neg_traj, opt, max_grad_norm):
+            sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+            sess.run( tf.global_variables_initializer())
             with tf.variable_scope("model", reuse=True) as scope:
                 params = tf.trainable_variables()
                 rep_params = params[:-6]
@@ -247,7 +249,7 @@ class CnnPolicy(object):
                     grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
                 grads_and_var = list(zip(grads, var))
                 opt.apply_gradients(grads_and_var)
-            #sess.run( tf.global_variables_initializer() )
+            
             return sess.run(self.rep_loss, {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})
 
 
