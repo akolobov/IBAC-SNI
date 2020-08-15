@@ -226,8 +226,6 @@ class CnnPolicy(object):
             return sess.run(self.act_invariant, {X: ob})
 
         def custom_train(anchors, pos_traj, neg_traj, opt, max_grad_norm):
-            sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
-            sess.run( tf.global_variables_initializer())
             with tf.variable_scope("model", reuse=True) as scope:
                 params = tf.trainable_variables()
                 rep_params = params[:-6]
