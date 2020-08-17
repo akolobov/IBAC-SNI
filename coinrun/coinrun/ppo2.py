@@ -23,49 +23,50 @@ from baselines.common.tf_util import initialize
 from baselines.common.mpi_util import sync_from_root
 from tensorflow.python.ops.ragged.ragged_util import repeat
 
+from random import choice
 
-def custom_loss(pos_state, rep_model, env, actions_shape, a_n, m=1):
+
+def custom_loss(state_pair, env, actions_shape, a_n):
     """ Implementation of the custom loss, designed to measure the distance between two
     trajectories in the latent representation space of states within the policy network
     Args:
-        pos_state: List of byte strings containing the current state (aka the positive sample) 
-            we wish to sample trajectories from
-        rep_model: tensorflow model that returns the representation encoding for a given observation(s)
+        state_pair: Tuple containing two Lists of byte strings containing the first (positive) &
+            last (negative) states we wish to sample/contrast trajectories from
         env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
             class which is defined in train_agent.py
         actions_shape: Tuple. Used to define the shape of the action array for one timestep for the 
             current environment
         a_n: Integer. Used to define a range [0, a_n] actions
             can take.
-        m: Integer. A hyperparameter used to determine the number of timesteps that we compute the loss
-            for within the trajectories
     Returns:
-        loss: Float. Value of our custom loss
+        trajs: (3, 256, m) numpy array containing the anchor, positive, and negative trajectories
     """
-    # sample two actions from pos state, and compute l_2 loss between
-    # observations as rep loss
-    # keep representations of trajectories as list of arrays
-    first_traj = []
-    second_traj = []
-    for _ in range(m):
+
+    anchor = []
+    pos_traj = []
+    neg_traj = []
+    pos_state, neg_state = state_pair
+    for _ in range(Config.REP_LOSS_M):
+        env.callmethod("set_state", pos_state)
         rand_a_1 = np.random.randint(a_n, size=actions_shape)
         obs_1, _, _, _ = env.step(rand_a_1)
         env.callmethod("set_state", pos_state)
         rand_a_2 = np.random.randint(a_n, size=actions_shape)
         obs_2, _, _, _ = env.step(rand_a_2)
-        env.callmethod("set_state", pos_state)
-        rep_vec_1 = rep_model(obs_1)
-        rep_vec_2 = rep_model(obs_2)
-        first_traj.append(rep_vec_1)
-        second_traj.append(rep_vec_2)
+        env.callmethod("set_state", neg_state)
+        rand_a_3 = np.random.randint(a_n, size=actions_shape)
+        obs_3, _, _, _ = env.step(rand_a_3)
+        anchor.append(obs_1)
+        pos_traj.append(obs_2)
+        neg_traj.append(obs_3)
 
-    rep_vec_1 = np.stack(first_traj)
-    rep_vec_2 = np.stack(second_traj)
-    diff = rep_vec_1 - rep_vec_2
-    mean_diff = tf.reduce_mean(diff, axis=0)
-    rep_norm = tf.norm(mean_diff, ord='euclidean')
-    print('rep loss is', rep_norm.eval())
-    return rep_norm
+    # return environment to last state before sampling
+    env.callmethod("set_state", neg_state)
+
+    anchors = np.concatenate(anchor, axis=0)
+    pos_traj = np.concatenate(pos_traj, axis=0)
+    neg_traj = np.concatenate(neg_traj, axis=0)
+    return anchors, pos_traj, neg_traj
 
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
@@ -75,8 +76,8 @@ class MpiAdamOptimizer(tf.train.AdamOptimizer):
         tf.train.AdamOptimizer.__init__(self, **kwargs)
     def compute_gradients(self, loss, var_list, **kwargs):
         grads_and_vars = tf.train.AdamOptimizer.compute_gradients(self, loss, var_list, **kwargs)
-        grads_and_vars = [(g, v) for g, v in grads_and_vars if g is not None]
 
+        grads_and_vars = [(g, v) for g, v in grads_and_vars if g is not None]
         flat_grad = tf.concat([tf.reshape(g, (-1,)) for g, v in grads_and_vars], axis=0)
 
         if Config.is_test_rank():
@@ -104,9 +105,9 @@ class MpiAdamOptimizer(tf.train.AdamOptimizer):
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
                 nsteps, ent_coef, vf_coef, max_grad_norm):
+        self.max_grad_norm = max_grad_norm
 
         sess = tf.get_default_session()
-
 
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps)
         norm_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
@@ -119,7 +120,6 @@ class Model(object):
         OLDVPRED = tf.placeholder(tf.float32, [None])
         LR = tf.placeholder(tf.float32, [])
         CLIPRANGE = tf.placeholder(tf.float32, [])
-        REP_LOSS = tf.placeholder(tf.float32)
 
         # VF loss
         vpred = train_model.vf_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
@@ -198,13 +198,14 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + REP_LOSS
+        loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
         else:
             trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
-
+        
+        self.opt = trainer
         grads_and_var = trainer.compute_gradients(loss, params)
 
         grads, var = zip(*grads_and_var)
@@ -214,18 +215,24 @@ class Model(object):
 
         _train = trainer.apply_gradients(grads_and_var)
 
-        def train(rep_loss, lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
-            sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
-            init = tf.global_variables_initializer()
-            sess.run(init)
+        # Apply custom loss
+        params = tf.trainable_variables()
+        rep_params = params[:-6]
+        grads_and_var = trainer.compute_gradients(train_model.rep_loss, rep_params)
+        grads, var = zip(*grads_and_var)
+        if max_grad_norm is not None:
+            grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+        grads_and_var = list(zip(grads, var))
+        trainer.apply_gradients(grads_and_var)
+        
+        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, anchors, pos_traj, neg_traj, states=None):
             advs = returns - values
-
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
             td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, REP_LOSS:rep_loss}
+                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.ANCHORS: anchors, train_model.POST_TRAJ: pos_traj, train_model.NEG_TRAJ: neg_traj}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -233,6 +240,11 @@ class Model(object):
                 [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
                 td_map
             )[:-1]
+
+        def custom_train(anchors, pos_traj, neg_traj): 
+            return 0
+            
+            
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv']
 
         def save(save_path):
@@ -251,10 +263,10 @@ class Model(object):
         self.act_model = act_model
         self.step = act_model.step
         self.value = act_model.value
-        self.rep_vec = act_model.rep_vec
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
+        self.custom_train = custom_train
 
         if Config.SYNC_FROM_ROOT:
             if MPI.COMM_WORLD.Get_rank() == 0:
@@ -271,12 +283,18 @@ class Runner(AbstractEnvRunner):
         super().__init__(env=env, model=model, nsteps=nsteps)
         self.lam = lam
         self.gamma = gamma
+        # List of two element tuples containing state lists for procgen,
+        # where each tuple is the start & ending state for a trajectory.
+        # The intuition here is that start and ending states will be very
+        # different, giving us good positive/negative examples.
+        self.diff_states = []
 
-    def run(self, update_frac, rep_loss_m):
+    def run(self, update_frac):
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
         mb_states = self.states
         epinfos = []
+        first_state = self.env.callmethod("get_state")
         # For n in range number of steps
         for _ in range(self.nsteps):
             # Given observations, get action value and neglopacs
@@ -295,7 +313,12 @@ class Runner(AbstractEnvRunner):
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(rewards)
-        rep_norm = custom_loss(self.env.callmethod("get_state"), self.model.rep_vec, self.env, actions.shape, self.env.action_space.n, m=rep_loss_m)
+        last_state = self.env.callmethod("get_state")
+        # Add in first & last state from trajectory
+        self.diff_states.append((first_state, last_state))
+        # sample state pair
+        state_pair = choice(self.diff_states)
+        anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -320,7 +343,7 @@ class Runner(AbstractEnvRunner):
         mb_returns = mb_advs + mb_values
 
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
-            mb_states, epinfos), rep_norm
+            mb_states, epinfos), anchors, pos_traj, neg_traj
 
 def sf01(arr):
     """
@@ -344,7 +367,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
     rank = comm.Get_rank()
     mpi_size = comm.Get_size()
 
-    sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+    sess = tf.get_default_session()
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -408,7 +431,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
 
-        packed, rep_norm = runner.run(update_frac=update/nupdates, rep_loss_m=rep_loss_m)
+        packed, anchors, pos_traj, neg_traj = runner.run(update_frac=update/nupdates)
         obs, returns, masks, actions, values, neglogpacs, states, epinfos = packed
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
@@ -422,7 +445,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
         mpi_print('updating parameters...')
         train_tstart = time.time()
 
+        mean_cust_loss = 0
         inds = np.arange(nbatch)
+        print('train loss loop')
         for _ in range(noptepochs):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -430,11 +455,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
                 end = start + nbatch_train
                 mbinds = inds[start:end]
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
-                rep_loss = 0
-                if rep_loss_bool:
-                    rep_loss = rep_norm.eval()
-                mblossvals.append(model.train(rep_loss*rep_lambda, lrnow, cliprangenow, *slices))
-
+                mblossvals.append(model.train(lrnow, cliprangenow, *slices, anchors, pos_traj, neg_traj))
+        print('end train loss loop')
+        if rep_loss_bool:
+            print('rep loss loop')
+            mean_cust_loss = model.custom_train(anchors, pos_traj, neg_traj)
+        print('end rep loss loop')
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
         sess.run([model.train_model.run_dropout_assign_ops])
@@ -459,6 +485,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
 
             tb_writer.log_scalar(ep_len_mean, 'ep_len_mean', step=step)
             tb_writer.log_scalar(fps, 'fps', step=step)
+            tb_writer.log_scalar(mean_cust_loss, 'mean_custom_loss', step=step)
 
             mpi_print('time_elapsed', tnow - tfirststart, run_t_total, train_t_total)
             mpi_print('timesteps', update*nsteps, total_timesteps)
