@@ -206,11 +206,6 @@ class CnnPolicy(object):
 
                 # For Dropout: Always change layer, so slow layer is never used
                 self.run_dropout_assign_ops = []
-        total_num_params = 0
-        params = tf.trainable_variables()
-        for p in params:
-            total_num_params += np.prod(p.get_shape().as_list())
-        print('before num params', total_num_params)
         with tf.variable_scope("model", reuse=True) as scope:
             _, anchor_rep, _, _ = choose_cnn(PROC_ANCH)
             
@@ -225,8 +220,9 @@ class CnnPolicy(object):
             logits = tf.stack([pos_exp, neg_exp])
             log_prob = tf.nn.log_softmax(logits)
              
-            self.rep_loss = -log_prob[0] #= (tf.norm(pos_diff, ord='euclidean') - tf.norm(neg_diff, ord='euclidean'))*Config.REP_LOSS_WEIGHT
+            self.rep_loss = -log_prob[0]*Config.REP_LOSS_WEIGHT
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+            params = tf.trainable_variables()
             # Apply custom loss
             trainer = None
             if Config.SYNC_FROM_ROOT:
@@ -240,11 +236,7 @@ class CnnPolicy(object):
                 grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
             grads_and_var = list(zip(grads, var))
             _custtrain = trainer.apply_gradients(grads_and_var)
-            total_num_params = 0
-            params = tf.trainable_variables()
-        for p in params:
-            total_num_params += np.prod(p.get_shape().as_list())
-        print('after num params', total_num_params)
+
         # Used in step
         a0_run = self.pd_run.sample()
         neglogp0_run = self.pd_run.neglogp(a0_run)
