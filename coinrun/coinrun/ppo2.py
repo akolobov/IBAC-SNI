@@ -109,9 +109,9 @@ class Model(object):
 
         sess = tf.get_default_session()
 
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps)
+        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
         norm_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1)
+        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.placeholder(tf.float32, [None])
@@ -215,6 +215,8 @@ class Model(object):
 
         _train = trainer.apply_gradients(grads_and_var)
 
+        
+        
         def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
@@ -230,12 +232,11 @@ class Model(object):
                 [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
                 td_map
             )[:-1]
-
-        def custom_train(anchors, pos_traj, neg_traj): 
-            return train_model.custom_train(anchors, pos_traj, neg_traj, self.opt, self.max_grad_norm)
-            
             
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv']
+
+        # def custom_train(anchors, pos_traj, neg_traj):
+        #     return train_model.custom_train(anchors, pos_traj, neg_traj)
 
         def save(save_path):
             ps = sess.run(params)
@@ -256,7 +257,7 @@ class Model(object):
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
-        self.custom_train = custom_train
+        self.custom_train = train_model.custom_train
 
         if Config.SYNC_FROM_ROOT:
             if MPI.COMM_WORLD.Get_rank() == 0:
@@ -349,8 +350,8 @@ def constfn(val):
     return f
 
 
-def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=False,
-            rep_lambda=1, rep_loss_m=1, vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
+def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
+             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None):
     comm = MPI.COMM_WORLD
@@ -447,9 +448,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         print('end train loss loop')
-        if rep_loss_bool:
+        if Config.CUSTOM_REP_LOSS:
             print('rep loss loop')
-            mean_cust_loss = model.custom_train(anchors, pos_traj, neg_traj)
+            mean_cust_loss, pos_exp, neg_exp, logits = model.train_model.custom_train(anchors, pos_traj, neg_traj)
         print('end rep loss loop')
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
@@ -472,7 +473,6 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr, rep_loss_bool=F
 
             mean_rewards.append(rew_mean_10)
             datapoints.append([step, rew_mean_10])
-
             tb_writer.log_scalar(ep_len_mean, 'ep_len_mean', step=step)
             tb_writer.log_scalar(fps, 'fps', step=step)
             tb_writer.log_scalar(mean_cust_loss, 'mean_custom_loss', step=step)
