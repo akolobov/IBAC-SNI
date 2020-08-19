@@ -224,7 +224,7 @@ class Model(object):
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
             td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.ANCHORS: anchors, train_model.POST_TRAJ: pos_traj, train_model.NEG_TRAJ: neg_traj}
+                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -450,7 +450,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         print('end train loss loop')
         if Config.CUSTOM_REP_LOSS:
             print('rep loss loop')
-            mean_cust_loss, pos_exp, neg_exp, logits = model.train_model.custom_train(anchors, pos_traj, neg_traj)
+            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)
         print('end rep loss loop')
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
@@ -475,7 +475,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             datapoints.append([step, rew_mean_10])
             tb_writer.log_scalar(ep_len_mean, 'ep_len_mean', step=step)
             tb_writer.log_scalar(fps, 'fps', step=step)
-            tb_writer.log_scalar(mean_cust_loss, 'mean_custom_loss', step=step)
+            tb_writer.log_scalar(mean_cust_loss[0], 'mean_custom_loss', step=step)
 
             mpi_print('time_elapsed', tnow - tfirststart, run_t_total, train_t_total)
             mpi_print('timesteps', update*nsteps, total_timesteps)
