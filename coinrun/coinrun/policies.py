@@ -101,11 +101,11 @@ def impala_cnn(images, depths=[16, 32, 32]):
     # else:
     core = out
     with tf.variable_scope("dense0"):
-        act_invariant = tf.layers.dense(core, 128)
+        act_invariant = tf.layers.dense(core, Config.NODES)
         act_invariant = tf.identity(act_invariant, name="action_invariant_layers")
         act_invariant = tf.nn.relu(act_invariant)
     with tf.variable_scope("dense1"):
-        act_condit = tf.layers.dense(core, 128)
+        act_condit = tf.layers.dense(core, 256 - Config.NODES)
         act_condit = tf.identity(act_condit, name="action_conditioned_layers")
         act_condit = tf.nn.relu(act_condit)
     return act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assign_ops

@@ -68,6 +68,9 @@ class ConfigSingle(object):
         # Number of timesteps we want to use for custom loss
         type_keys.append(('m', 'rep_loss_m', int, 1))
 
+        # Number of hidden units to apply loss to. Assuming representation layer is 256 units
+        type_keys.append(('nodes', 'nodes', int, 128))
+
         # Deactivated because not needed. To re-activate, uncomment line in main_utils.py as well
         # GPU offset: Use RCALL_NUM_GPU, starting from this value
         # type_keys.append(('gpu-offset', 'gpu_offset', int, 0, False))
