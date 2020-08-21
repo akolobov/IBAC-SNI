@@ -137,7 +137,7 @@ def main():
         total_timesteps = int(200e6)
     elif Config.SHORT_TRAINING:
         #total_timesteps = int(120e6)
-        total_timesteps = int(15e6)
+        total_timesteps = int(25e6)
     save_interval = args.save_interval
 
     #env = utils.make_general_env(nenvs, seed=rank)
@@ -156,12 +156,6 @@ def main():
 
     venv = VecNormalize(venv=venv, ob=False)
     
-    rep_lambda = Config.REP_LOSS_WEIGHT
-    m = Config.REP_LOSS_M
-    print('weight is', rep_lambda)
-    rep_loss = False
-    if Config.CUSTOM_REP_LOSS:
-        rep_loss = True
     #sys.exit(0)
     with tf.Session(config=config) as sess:
         #env = wrappers.add_final_wrappers(env)
@@ -183,10 +177,7 @@ def main():
                     ent_coef=Config.ENTROPY_COEFF,
                     lr=lambda f : f * Config.LEARNING_RATE,
                     cliprange=lambda f : f * 0.2,
-                    total_timesteps=total_timesteps,
-                    rep_loss_bool=rep_loss,
-                    rep_lambda=rep_lambda,
-                    rep_loss_m=m)
+                    total_timesteps=total_timesteps)
 
 if __name__ == '__main__':
     main()

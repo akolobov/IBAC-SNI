@@ -3,7 +3,10 @@ import tensorflow as tf
 from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch, lstm
 from baselines.common.distributions import make_pdtype, _matching_fc
 from baselines.common.input import observation_input
+from coinrun.ppo2 import MpiAdamOptimizer
 ds = tf.contrib.distributions
+from mpi4py import MPI
+
 
 from coinrun.config import Config
 
@@ -98,11 +101,11 @@ def impala_cnn(images, depths=[16, 32, 32]):
     # else:
     core = out
     with tf.variable_scope("dense0"):
-        act_invariant = tf.layers.dense(core, 128)
+        act_invariant = tf.layers.dense(core, Config.NODES)
         act_invariant = tf.identity(act_invariant, name="action_invariant_layers")
         act_invariant = tf.nn.relu(act_invariant)
     with tf.variable_scope("dense1"):
-        act_condit = tf.layers.dense(core, 128)
+        act_condit = tf.layers.dense(core, 256 - Config.NODES)
         act_condit = tf.identity(act_condit, name="action_conditioned_layers")
         act_condit = tf.nn.relu(act_condit)
     return act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assign_ops
@@ -123,7 +126,7 @@ def choose_cnn(images):
 
 
 class CnnPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, **conv_kwargs): #pylint: disable=W0613
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
         self.pdtype = make_pdtype(ac_space)
 
         
@@ -205,15 +208,37 @@ class CnnPolicy(object):
                 # For Dropout: Always change layer, so slow layer is never used
                 self.run_dropout_assign_ops = []
         with tf.variable_scope("model", reuse=True) as scope:
-                _, anchor_rep, _, _ = choose_cnn(PROC_ANCH)
-               
-                _, pos_rep, _, _ = choose_cnn(PROC_POS)
-        
-                _, neg_rep, _, _ = choose_cnn(PROC_NEG)
-                
-                pos_diff = tf.reduce_mean(anchor_rep - pos_rep, axis=0)
-                neg_diff = tf.reduce_mean(anchor_rep - neg_rep, axis=0)
-                self.rep_loss = (tf.norm(pos_diff, ord='euclidean') - tf.norm(neg_diff, ord='euclidean'))*Config.REP_LOSS_WEIGHT
+            _, anchor_rep, _, _ = choose_cnn(PROC_ANCH)
+            
+            _, pos_rep, _, _ = choose_cnn(PROC_POS)
+    
+            # _, neg_rep, _, _ = choose_cnn(PROC_NEG)
+
+            # pos_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, pos_rep))
+            # neg_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, neg_rep))
+            # pos_exp = tf.reduce_mean(tf.math.exp(pos_matr))
+            # neg_exp = tf.reduce_mean(tf.math.exp(neg_matr))
+            # logits = tf.stack([pos_exp, neg_exp])
+            # log_prob = tf.nn.log_softmax(logits)
+            #self.rep_loss = -log_prob[0]*Config.REP_LOSS_WEIGHT
+            pos_diff = tf.reduce_mean(anchor_rep - pos_rep, axis=0)
+            self.rep_loss = (tf.norm(pos_diff, ord='euclidean')*Config.REP_LOSS_WEIGHT)
+
+        with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+            params = tf.trainable_variables()
+            # Apply custom loss
+            trainer = None
+            if Config.SYNC_FROM_ROOT:
+                trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
+            else:
+                trainer = tf.train.AdamOptimizer( epsilon=1e-5)
+            rep_params = params[:-6]
+            grads_and_var = trainer.compute_gradients(self.rep_loss, rep_params)
+            grads, var = zip(*grads_and_var)
+            if max_grad_norm is not None:
+                grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+            grads_and_var = list(zip(grads, var))
+            _custtrain = trainer.apply_gradients(grads_and_var)
 
         # Used in step
         a0_run = self.pd_run.sample()
@@ -234,18 +259,8 @@ class CnnPolicy(object):
         def rep_vec(ob, *_args, **_kwargs):
             return sess.run(self.act_invariant, {X: ob})
 
-        # def custom_train(anchors, pos_traj, neg_traj, opt, max_grad_norm):
-            
-
-                
-        #         grads_and_var = opt.compute_gradients(self.rep_loss, params)
-        #         grads, var = zip(*grads_and_var)
-        #         if max_grad_norm is not None:
-        #             grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-        #         grads_and_var = list(zip(grads, var))
-        #         opt.apply_gradients(grads_and_var)
-            
-        #     return sess.run(self.rep_loss, {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})
+        def custom_train(anchors, pos_traj, neg_traj):
+            return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
 
 
         self.X = X
@@ -256,7 +271,7 @@ class CnnPolicy(object):
         self.step = step
         self.value = value
         self.rep_vec = rep_vec
-        self.custom_train = None
+        self.custom_train = custom_train
 
 
 def get_policy():
