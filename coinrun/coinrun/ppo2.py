@@ -450,7 +450,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         print('end train loss loop')
         if Config.CUSTOM_REP_LOSS:
             print('rep loss loop')
-            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)
+            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
+        else:
+            mean_cust_loss = 0
         print('end rep loss loop')
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
@@ -475,7 +477,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             datapoints.append([step, rew_mean_10])
             tb_writer.log_scalar(ep_len_mean, 'ep_len_mean', step=step)
             tb_writer.log_scalar(fps, 'fps', step=step)
-            tb_writer.log_scalar(mean_cust_loss[0], 'mean_custom_loss', step=step)
+            tb_writer.log_scalar(mean_cust_loss, 'mean_custom_loss', step=step)
 
             mpi_print('time_elapsed', tnow - tfirststart, run_t_total, train_t_total)
             mpi_print('timesteps', update*nsteps, total_timesteps)
