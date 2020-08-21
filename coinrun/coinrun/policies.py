@@ -129,6 +129,7 @@ class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
         self.pdtype = make_pdtype(ac_space)
 
+        
         # So that I can compute the saliency map
         if Config.REPLAY:
             X = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='Ob')
