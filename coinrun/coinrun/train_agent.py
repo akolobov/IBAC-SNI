@@ -137,7 +137,7 @@ def main():
         total_timesteps = int(200e6)
     elif Config.SHORT_TRAINING:
         #total_timesteps = int(120e6)
-        total_timesteps = int(25e6)
+        total_timesteps = int(15e6)
     save_interval = args.save_interval
 
     #env = utils.make_general_env(nenvs, seed=rank)
