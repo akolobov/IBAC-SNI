@@ -150,7 +150,7 @@ class CnnPolicy(object):
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
             # stack together action invariant & conditioned layers for full representation layer
-            self.h = tf.concat([act_condit, act_invariant], axis=1)
+            self.h =  act_condit #tf.concat([act_condit, act_invariant], axis=1)
             self.h_vf = self.h
             # Noisy policy and value function for train
             if Config.BETA >= 0:
