@@ -309,7 +309,7 @@ class Runner(AbstractEnvRunner):
         anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
         
         # return environment to last state before sampling
-        env.callmethod("set_state", last_state)
+        self.env.callmethod("set_state", last_state)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
