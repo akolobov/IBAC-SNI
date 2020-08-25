@@ -60,9 +60,6 @@ def custom_loss(state_pair, env, actions_shape, a_n):
         pos_traj.append(obs_2)
         neg_traj.append(obs_3)
 
-    # return environment to last state before sampling
-    env.callmethod("set_state", neg_state)
-
     anchors = np.concatenate(anchor, axis=0)
     pos_traj = np.concatenate(pos_traj, axis=0)
     neg_traj = np.concatenate(neg_traj, axis=0)
@@ -309,9 +306,9 @@ class Runner(AbstractEnvRunner):
         self.diff_states.append((first_state, last_state))
         # sample state pair
         state_pair = choice(self.diff_states)
-        anchors, pos_traj, neg_traj = None, None, None#custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
+        anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
         
-        env.callmethod("set_state", first_state)
+        # return environment to last state before sampling
         env.callmethod("set_state", last_state)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
