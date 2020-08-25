@@ -310,6 +310,9 @@ class Runner(AbstractEnvRunner):
         # sample state pair
         state_pair = choice(self.diff_states)
         anchors, pos_traj, neg_traj = None, None, None#custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
+        
+        env.callmethod("set_state", first_state)
+        env.callmethod("set_state", last_state)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
