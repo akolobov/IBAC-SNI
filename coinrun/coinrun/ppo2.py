@@ -39,25 +39,33 @@ def custom_loss(state_pair, env, actions_shape, a_n):
         a_n: Integer. Used to define a range [0, a_n] actions
             can take.
     Returns:
-        trajs: (3, 256, m) numpy array containing the anchor, positive, and negative trajectories
+        anchors, pos_traj, neg_traj: numpy arrays containing the anchor, positive, and negative trajectories respectively
     """
 
     anchor = []
     pos_traj = []
     neg_traj = []
     pos_state, neg_state = state_pair
+
+    # sample anchor
+    env.callmethod("set_state", pos_state)
     for _ in range(Config.REP_LOSS_M):
-        env.callmethod("set_state", pos_state)
         rand_a_1 = np.random.randint(a_n, size=actions_shape)
         obs_1, _, _, _ = env.step(rand_a_1)
-        env.callmethod("set_state", pos_state)
+        anchor.append(obs_1)
+    
+    # sample positive
+    env.callmethod("set_state", pos_state)
+    for _ in range(Config.REP_LOSS_M):
         rand_a_2 = np.random.randint(a_n, size=actions_shape)
         obs_2, _, _, _ = env.step(rand_a_2)
-        env.callmethod("set_state", neg_state)
+        pos_traj.append(obs_2)
+
+    # sample negative
+    env.callmethod("set_state", neg_state)
+    for _ in range(Config.REP_LOSS_M):
         rand_a_3 = np.random.randint(a_n, size=actions_shape)
         obs_3, _, _, _ = env.step(rand_a_3)
-        anchor.append(obs_1)
-        pos_traj.append(obs_2)
         neg_traj.append(obs_3)
 
     anchors = np.concatenate(anchor, axis=0)
@@ -231,9 +239,6 @@ class Model(object):
             )[:-1]
             
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv']
-
-        # def custom_train(anchors, pos_traj, neg_traj):
-        #     return train_model.custom_train(anchors, pos_traj, neg_traj)
 
         def save(save_path):
             ps = sess.run(params)
@@ -438,7 +443,6 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
         mean_cust_loss = 0
         inds = np.arange(nbatch)
-        print('train loss loop')
         for _ in range(noptepochs):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -447,13 +451,11 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 mbinds = inds[start:end]
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-        print('end train loss loop')
         if Config.CUSTOM_REP_LOSS:
             print('rep loss loop')
-            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
+            mean_cust_loss, pos_matr, neg_matr = model.train_model.custom_train(anchors, pos_traj, neg_traj)
         else:
             mean_cust_loss = 0
-        print('end rep loss loop')
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
         sess.run([model.train_model.run_dropout_assign_ops])

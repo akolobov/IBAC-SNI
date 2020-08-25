@@ -208,21 +208,18 @@ class CnnPolicy(object):
                 # For Dropout: Always change layer, so slow layer is never used
                 self.run_dropout_assign_ops = []
         with tf.variable_scope("model", reuse=True) as scope:
+            y = tf.constant([1.0, 0.0])
             _, anchor_rep, _, _ = choose_cnn(PROC_ANCH)
             
             _, pos_rep, _, _ = choose_cnn(PROC_POS)
     
-            # _, neg_rep, _, _ = choose_cnn(PROC_NEG)
+            _, neg_rep, _, _ = choose_cnn(PROC_NEG)
 
-            # pos_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, pos_rep))
-            # neg_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, neg_rep))
-            # pos_exp = tf.reduce_mean(tf.math.exp(pos_matr))
-            # neg_exp = tf.reduce_mean(tf.math.exp(neg_matr))
-            # logits = tf.stack([pos_exp, neg_exp])
-            # log_prob = tf.nn.log_softmax(logits)
-            #self.rep_loss = -log_prob[0]*Config.REP_LOSS_WEIGHT
-            pos_diff = tf.reduce_mean(anchor_rep - pos_rep, axis=0)
-            self.rep_loss = (tf.norm(pos_diff, ord='euclidean')*Config.REP_LOSS_WEIGHT)
+            pos_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, pos_rep))
+            neg_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, neg_rep))
+            logit = tf.stack([pos_matr, neg_matr])
+            bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
+            self.rep_loss = tf.reduce_mean(bce)
 
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             params = tf.trainable_variables()
@@ -254,13 +251,8 @@ class CnnPolicy(object):
         def value(ob, update_frac, *_args, **_kwargs):
             return sess.run(self.vf_run, {X: ob})
 
-        # Helper function to get the representation embedding from a given
-        # observation
-        def rep_vec(ob, *_args, **_kwargs):
-            return sess.run(self.act_invariant, {X: ob})
-
         def custom_train(anchors, pos_traj, neg_traj):
-            return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
+            return sess.run([self.rep_loss, pos_matr, neg_matr, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
 
 
         self.X = X
@@ -270,7 +262,6 @@ class CnnPolicy(object):
         self.processed_x = processed_x
         self.step = step
         self.value = value
-        self.rep_vec = rep_vec
         self.custom_train = custom_train
 
 
