@@ -219,7 +219,7 @@ class CnnPolicy(object):
             neg_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, neg_rep))
             logit = tf.math.tanh(tf.stack([pos_matr, neg_matr]))
             bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
-            self.rep_loss = tf.reduce_mean(bce)
+            self.rep_loss = tf.reduce_mean(bce)*Config.REP_LOSS_WEIGHT
 
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             params = tf.trainable_variables()
