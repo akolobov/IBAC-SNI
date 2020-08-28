@@ -450,7 +450,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         print('end train loss loop')
         if Config.CUSTOM_REP_LOSS:
             print('rep loss loop')
-            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
+            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj)[0]
         else:
             mean_cust_loss = 0
         print('end rep loss loop')

@@ -137,12 +137,12 @@ class CnnPolicy(object):
             # create placeholders for custom loss
             ANCHORS = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='anch')
             POST_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='post_traj')
-            NEG_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
+            #NEG_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
         else:
             X, processed_x = observation_input(ob_space, nbatch)
-            ANCHORS, PROC_ANCH = observation_input(ob_space, Config.REP_LOSS_M*32, name='anch')
-            POST_TRAJ, PROC_POS = observation_input(ob_space, Config.REP_LOSS_M*32, name='pos_traj')
-            NEG_TRAJ, PROC_NEG = observation_input(ob_space, Config.REP_LOSS_M*32, name='neg_traj')
+            ANCHORS, PROC_ANCH = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='anch')
+            POST_TRAJ, PROC_POS = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='pos_traj')
+            #NEG_TRAJ, PROC_NEG = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='neg_traj')
 
 
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
@@ -211,16 +211,11 @@ class CnnPolicy(object):
             _, anchor_rep, _, _ = choose_cnn(PROC_ANCH)
             
             _, pos_rep, _, _ = choose_cnn(PROC_POS)
-    
-            # _, neg_rep, _, _ = choose_cnn(PROC_NEG)
 
-            # pos_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, pos_rep))
-            # neg_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, neg_rep))
-            # pos_exp = tf.reduce_mean(tf.math.exp(pos_matr))
-            # neg_exp = tf.reduce_mean(tf.math.exp(neg_matr))
-            # logits = tf.stack([pos_exp, neg_exp])
-            # log_prob = tf.nn.log_softmax(logits)
-            #self.rep_loss = -log_prob[0]*Config.REP_LOSS_WEIGHT
+            # (num_envs, m, nodes)
+            anchor_rep = tf.reshape(anchor_rep, [Config.NUM_ENVS, Config.REP_LOSS_M, -1])
+            pos_rep = tf.reshape(pos_rep, [Config.NUM_ENVS, Config.REP_LOSS_M, -1])
+
             pos_diff = tf.reduce_mean(anchor_rep - pos_rep, axis=0)
             self.rep_loss = (tf.norm(pos_diff, ord='euclidean')*Config.REP_LOSS_WEIGHT)
 
@@ -259,14 +254,13 @@ class CnnPolicy(object):
         def rep_vec(ob, *_args, **_kwargs):
             return sess.run(self.act_invariant, {X: ob})
 
-        def custom_train(anchors, pos_traj, neg_traj):
-            return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
+        def custom_train(anchors, pos_traj):
+            return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj})[:-1]
 
 
         self.X = X
         self.ANCHORS = ANCHORS
         self.POST_TRAJ = POST_TRAJ
-        self.NEG_TRAJ = NEG_TRAJ
         self.processed_x = processed_x
         self.step = step
         self.value = value
