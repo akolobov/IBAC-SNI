@@ -140,9 +140,9 @@ class CnnPolicy(object):
             NEG_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
         else:
             X, processed_x = observation_input(ob_space, nbatch)
-            ANCHORS, PROC_ANCH = observation_input(ob_space, Config.REP_LOSS_M*32, name='anch')
-            POST_TRAJ, PROC_POS = observation_input(ob_space, Config.REP_LOSS_M*32, name='pos_traj')
-            NEG_TRAJ, PROC_NEG = observation_input(ob_space, Config.REP_LOSS_M*32, name='neg_traj')
+            ANCHORS, PROC_ANCH = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='anch')
+            POST_TRAJ, PROC_POS = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='pos_traj')
+            NEG_TRAJ, PROC_NEG = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS*Config.NEGS, name='neg_traj')
 
 
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
@@ -215,11 +215,31 @@ class CnnPolicy(object):
     
             _, neg_rep, _, _ = choose_cnn(PROC_NEG)
 
-            pos_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, pos_rep))
-            neg_matr = tf.reduce_mean(tf.einsum('ij,kj->ik', anchor_rep, neg_rep))
-            logit = tf.math.tanh(tf.stack([pos_matr, neg_matr]))
-            bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
-            self.rep_loss = tf.reduce_mean(bce)*Config.REP_LOSS_WEIGHT
+            # (num_envs, m, nodes)
+            anchor_rep = tf.reshape(anchor_rep, [Config.NUM_ENVS, Config.REP_LOSS_M, -1])
+            pos_rep = tf.reshape(pos_rep, [Config.NUM_ENVS, Config.REP_LOSS_M, -1])
+
+            # (neg_samples, num_envs, m, nodes)
+            neg_rep = tf.reshape(neg_rep, [Config.NEGS, Config.NUM_ENVS, Config.REP_LOSS_M, -1])
+
+            # (num_envs, m) multiply all representation layers across envs, and trajectories
+            pos_matr = tf.einsum('aij,aij->ai', anchor_rep, pos_rep)
+
+            # logit for positive sample and anchor
+            pos_logit = tf.expand_dims(tf.reduce_mean(pos_matr), axis=0)
+            # (neg_samples, num_envs, m) multiply all representation layers across envs, and trajectories
+            # for each negative sample
+            neg_matr = tf.einsum('aij,kaij->kai', anchor_rep, neg_rep)
+            
+            # get average over negative samples to find logits
+            neg_logits = tf.math.reduce_mean(neg_matr, axis=(1, 2))
+            
+            # TODO put back in tanh clamping in case things get unstable with InfoNCE
+            logits = tf.concat([pos_logit, neg_logits], axis=0)
+            # bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
+            # loss is negative of first logit, which is positive samp/ anchor
+            neg_probs = tf.math.negative(tf.nn.log_softmax(logits))
+            self.rep_loss = neg_probs[0]*Config.REP_LOSS_WEIGHT
 
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             params = tf.trainable_variables()
@@ -252,7 +272,7 @@ class CnnPolicy(object):
             return sess.run(self.vf_run, {X: ob})
 
         def custom_train(anchors, pos_traj, neg_traj):
-            return sess.run([self.rep_loss, pos_matr, neg_matr, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
+            return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
 
 
         self.X = X

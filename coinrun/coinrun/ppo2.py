@@ -61,16 +61,20 @@ def custom_loss(state_pair, env, actions_shape, a_n):
         obs_2, _, _, _ = env.step(rand_a_2)
         pos_traj.append(obs_2)
 
-    # sample negative
-    env.callmethod("set_state", neg_state)
-    for _ in range(Config.REP_LOSS_M):
-        rand_a_3 = np.random.randint(a_n, size=actions_shape)
-        obs_3, _, _, _ = env.step(rand_a_3)
-        neg_traj.append(obs_3)
+    # sample negatives
+    for _ in range(Config.NEGS):
+        env.callmethod("set_state", neg_state)
+        for _ in range(Config.REP_LOSS_M):
+            rand_a_3 = np.random.randint(a_n, size=actions_shape)
+            obs_3, _, _, _ = env.step(rand_a_3)
+            neg_traj.append(obs_3)
 
     anchors = np.concatenate(anchor, axis=0)
     pos_traj = np.concatenate(pos_traj, axis=0)
     neg_traj = np.concatenate(neg_traj, axis=0)
+    #neg_traj = np.reshape(neg_traj, (256, Config.NUM_ENVS, Config.REP_LOSS_M, 64, 64, 3))
+    #print(anchors.shape)
+    #print(neg_traj.shape)
     return anchors, pos_traj, neg_traj
 
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
@@ -453,7 +457,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         if Config.CUSTOM_REP_LOSS:
             print('rep loss loop')
-            mean_cust_loss, pos_matr, neg_matr = model.train_model.custom_train(anchors, pos_traj, neg_traj)
+            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
         else:
             mean_cust_loss = 0
         # update the dropout mask

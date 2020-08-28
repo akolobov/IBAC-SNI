@@ -68,6 +68,9 @@ class ConfigSingle(object):
         # Number of timesteps we want to use for custom loss
         type_keys.append(('m', 'rep_loss_m', int, 1))
 
+        # Number of negative examples we want to use for custom loss
+        type_keys.append(('negs', 'NEGS', int, 20))
+
         # Number of hidden units to apply loss to. Assuming representation layer is 256 units
         type_keys.append(('nodes', 'nodes', int, 128))
 
