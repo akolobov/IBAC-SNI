@@ -124,8 +124,8 @@ def main():
     seed = int(time.time()) % 10000
     set_global_seeds(seed * 100 + rank)
 
-    utils.setup_mpi_gpus()
-    #setup_mpi_gpus()
+    #utils.setup_mpi_gpus()
+    setup_mpi_gpus()
     
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True # pylint: disable=E1101
