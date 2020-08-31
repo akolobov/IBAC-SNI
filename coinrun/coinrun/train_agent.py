@@ -1,6 +1,7 @@
 """
 Train an agent using a PPO2 based on OpenAI Baselines.
 """
+import os
 import copy
 import time
 from mpi4py import MPI
@@ -125,7 +126,9 @@ def main():
     set_global_seeds(seed * 100 + rank)
 
     #utils.setup_mpi_gpus()
-    setup_mpi_gpus()
+    #setup_mpi_gpus()
+    gpus = [x for x in range(Config.NUM_GPUS)]
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpus))
     
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True # pylint: disable=E1101

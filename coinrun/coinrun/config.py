@@ -53,6 +53,9 @@ class ConfigSingle(object):
         # Weighting value for the custom presentation loss
         type_keys.append(('rep_lambda', 'rep_loss_weight', float, 1))
 
+        # number of GPUs to use (note this assumes only one process)
+        type_keys.append(('gpus', 'num_gpus', int, 1))
+
         # Beta value for Info-loss KL divergence. -1 leaves this loss term out. 0 will probably diverge
         type_keys.append(('b', 'beta', float, -1., True))
 

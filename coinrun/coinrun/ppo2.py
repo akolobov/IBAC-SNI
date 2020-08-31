@@ -72,9 +72,6 @@ def custom_loss(state_pair, env, actions_shape, a_n):
     anchors = np.concatenate(anchor, axis=0)
     pos_traj = np.concatenate(pos_traj, axis=0)
     neg_traj = np.concatenate(neg_traj, axis=0)
-    #neg_traj = np.reshape(neg_traj, (256, Config.NUM_ENVS, Config.REP_LOSS_M, 64, 64, 3))
-    #print(anchors.shape)
-    #print(neg_traj.shape)
     return anchors, pos_traj, neg_traj
 
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
