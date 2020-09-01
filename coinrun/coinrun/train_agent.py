@@ -127,8 +127,11 @@ def main():
 
     #utils.setup_mpi_gpus()
     #setup_mpi_gpus()
-    gpus = [x for x in range(Config.NUM_GPUS)]
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpus))
+    # gpus = [x for x in range(Config.NUM_GPUS)]
+    # gp_str = ",".join(map(str, gpus))
+    # print('log', gp_str)
+    # os.environ["CUDA_VISIBLE_DEVICES"] = 
+    os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
     
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True # pylint: disable=E1101

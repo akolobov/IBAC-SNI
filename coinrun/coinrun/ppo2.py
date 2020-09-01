@@ -8,6 +8,7 @@ import numpy as np
 import tensorflow as tf
 from collections import deque
 import gym3
+import os
 
 from mpi4py import MPI
 
