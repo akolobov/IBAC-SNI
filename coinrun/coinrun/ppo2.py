@@ -367,6 +367,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
     sess = tf.get_default_session()
 
+    print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
+
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
     if isinstance(cliprange, float): cliprange = constfn(cliprange)
