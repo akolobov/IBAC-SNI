@@ -209,24 +209,40 @@ class CnnPolicy(object):
                 self.run_dropout_assign_ops = []
 
         with tf.variable_scope("model", reuse=True) as scope:
-            for i, d in enumerate(['/gpu:0', '/gpu:1']):
+            for i, d in enumerate(['/gpu:0', '/gpu:1', '/gpu:2', '/gpu:3']):
                 with tf.device(d):
                     if i == 0:
                         # (num_envs, m, nodes)
-                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[0:10] 
+                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[0:8] 
                         
-                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[0:10]
+                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[0:8]
 
                         # (num_envs , neg_samples, m, nodes)
-                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[0:10]
-                    else:
+                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[0:8]
+                    elif i == 1:
                          # (num_envs, m, nodes)
-                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[10:] 
+                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[8:16] 
                         
-                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[10:]
+                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[8:16]
 
                         # (num_envs , neg_samples, m, nodes)
-                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[10:]
+                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[8:16]
+                    elif i == 2:
+                        # (num_envs, m, nodes)
+                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[16:24] 
+                        
+                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[16:24]
+
+                        # (num_envs , neg_samples, m, nodes)
+                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[16:24]
+                    else:
+                        # (num_envs, m, nodes)
+                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[24:] 
+                        
+                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[24:]
+
+                        # (num_envs , neg_samples, m, nodes)
+                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[24:]
                     # (num_envs, m) multiply all representation layers across envs, and trajectories
                     pos_matr = tf.einsum('aij,aij->ai', anchor_rep, pos_rep)
 
