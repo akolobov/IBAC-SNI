@@ -131,9 +131,9 @@ def main():
     # gp_str = ",".join(map(str, gpus))
     # print('log', gp_str)
     # os.environ["CUDA_VISIBLE_DEVICES"] = 
-    os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
+    #os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
     
-    config = tf.ConfigProto()
+    config = tf.ConfigProto(log_device_placement=True)
     config.gpu_options.allow_growth = True # pylint: disable=E1101
 
     nenvs = Config.NUM_ENVS

@@ -8,7 +8,6 @@ import numpy as np
 import tensorflow as tf
 from collections import deque
 import gym3
-import os
 
 from mpi4py import MPI
 
@@ -366,8 +365,6 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     mpi_size = comm.Get_size()
 
     sess = tf.get_default_session()
-
-    print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
