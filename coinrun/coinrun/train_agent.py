@@ -133,7 +133,7 @@ def main():
     # os.environ["CUDA_VISIBLE_DEVICES"] = 
     #os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
     
-    config = tf.ConfigProto(log_device_placement=True)
+    config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True # pylint: disable=E1101
 
     nenvs = Config.NUM_ENVS

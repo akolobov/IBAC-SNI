@@ -134,10 +134,6 @@ class CnnPolicy(object):
         if Config.REPLAY:
             X = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='Ob')
             processed_x = X
-            # create placeholders for custom loss
-            ANCHORS = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='anch')
-            POST_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='post_traj')
-            NEG_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
         else:
             X, processed_x = observation_input(ob_space, nbatch)
             ANCHORS, PROC_ANCH = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='anch')
@@ -208,76 +204,101 @@ class CnnPolicy(object):
                 # For Dropout: Always change layer, so slow layer is never used
                 self.run_dropout_assign_ops = []
 
-        with tf.variable_scope("model", reuse=True) as scope:
-            for i, d in enumerate(['/gpu:0', '/gpu:1', '/gpu:2', '/gpu:3']):
-                with tf.device(d):
-                    if i == 0:
-                        # (num_envs, m, nodes)
-                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[0:8] 
-                        
-                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[0:8]
+        with tf.device('/gpu:0'):
+            ANCHORS_0, PROC_ANCH_0 = observation_input(ob_space, Config.REP_LOSS_M*(Config.NUM_ENVS//2))
+            POST_TRAJ_0, PROC_POS_0 = observation_input(ob_space, Config.REP_LOSS_M*(Config.NUM_ENVS//2))
+            NEG_TRAJ_0, PROC_NEG_0 = observation_input(ob_space, Config.REP_LOSS_M*(Config.NUM_ENVS//2)*Config.NEGS)
+            with tf.variable_scope("model", reuse=True) as scope:
+                # (num_envs, m, nodes)
+                anchor_rep = tf.reshape(choose_cnn(PROC_ANCH_0)[1], [Config.NUM_ENVS//2, Config.REP_LOSS_M, -1])
+                
+                pos_rep = tf.reshape(choose_cnn(PROC_POS_0)[1], [Config.NUM_ENVS//2, Config.REP_LOSS_M, -1])
 
-                        # (num_envs , neg_samples, m, nodes)
-                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[0:8]
-                    elif i == 1:
-                         # (num_envs, m, nodes)
-                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[8:16] 
-                        
-                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[8:16]
+                # (num_envs , neg_samples, m, nodes)
+                neg_rep = tf.reshape(choose_cnn(PROC_NEG_0)[1], [Config.NUM_ENVS//2, Config.NEGS, Config.REP_LOSS_M, -1])
+                # (num_envs, m) multiply all representation layers across envs, and trajectories
+                pos_matr = tf.einsum('aij,aij->ai', anchor_rep, pos_rep)
 
-                        # (num_envs , neg_samples, m, nodes)
-                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[8:16]
-                    elif i == 2:
-                        # (num_envs, m, nodes)
-                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[16:24] 
-                        
-                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[16:24]
+                # logit for positive sample and anchor
+                pos_logit = tf.expand_dims(tf.reduce_mean(pos_matr), axis=0)
 
-                        # (num_envs , neg_samples, m, nodes)
-                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[16:24]
-                    else:
-                        # (num_envs, m, nodes)
-                        anchor_rep = tf.reshape(choose_cnn(PROC_ANCH)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[24:] 
-                        
-                        pos_rep = tf.reshape(choose_cnn(PROC_POS)[1], [Config.NUM_ENVS, Config.REP_LOSS_M, -1])[24:]
+                # (num_envs, neg_samples, m) multiply all representation layers across envs, and trajectories
+                # for each negative sample
+                neg_matr = tf.einsum('kij,kaij->kai', anchor_rep, neg_rep)
+                
+                # get average over negative samples to find logits
+                neg_logits = tf.math.reduce_mean(neg_matr, axis=(0, 2))
+                
+                # TODO put back in tanh clamping in case things get unstable with InfoNCE
+                logits = tf.concat([pos_logit, neg_logits], axis=0)
+                # bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
+                # loss is negative of first logit, which is positive samp/ anchor
+                neg_probs = tf.math.negative(tf.nn.log_softmax(logits))
+                self.rep_loss = neg_probs[0]*Config.REP_LOSS_WEIGHT
 
-                        # (num_envs , neg_samples, m, nodes)
-                        neg_rep = tf.reshape(choose_cnn(PROC_NEG)[1], [Config.NUM_ENVS, Config.NEGS, Config.REP_LOSS_M, -1])[24:]
-                    # (num_envs, m) multiply all representation layers across envs, and trajectories
-                    pos_matr = tf.einsum('aij,aij->ai', anchor_rep, pos_rep)
+            with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+                params = tf.trainable_variables()
+                # Apply custom loss
+                trainer = None
+                if Config.SYNC_FROM_ROOT:
+                    trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
+                else:
+                    trainer = tf.train.AdamOptimizer( epsilon=1e-5)
+                rep_params = params[:-6]
+                grads_and_var = trainer.compute_gradients(self.rep_loss, rep_params)
+                grads, var = zip(*grads_and_var)
+                if max_grad_norm is not None:
+                    grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+                grads_and_var = list(zip(grads, var))
+                _custtrain = trainer.apply_gradients(grads_and_var)
 
-                    # logit for positive sample and anchor
-                    pos_logit = tf.expand_dims(tf.reduce_mean(pos_matr), axis=0)
+        with tf.device('/gpu:1'):
+            ANCHORS_1, PROC_ANCH_1 = observation_input(ob_space, Config.REP_LOSS_M*(Config.NUM_ENVS//2))
+            POST_TRAJ_1, PROC_POS_1 = observation_input(ob_space, Config.REP_LOSS_M*(Config.NUM_ENVS//2))
+            NEG_TRAJ_1, PROC_NEG_1 = observation_input(ob_space, Config.REP_LOSS_M*(Config.NUM_ENVS//2)*Config.NEGS)
+            with tf.variable_scope("model", reuse=True) as scope:
+                # (num_envs, m, nodes)
+                anchor_rep = tf.reshape(choose_cnn(PROC_ANCH_1)[1], [Config.NUM_ENVS//2, Config.REP_LOSS_M, -1])
+                
+                pos_rep = tf.reshape(choose_cnn(PROC_POS_1)[1], [Config.NUM_ENVS//2, Config.REP_LOSS_M, -1])
 
-                    # (num_envs, neg_samples, m) multiply all representation layers across envs, and trajectories
-                    # for each negative sample
-                    neg_matr = tf.einsum('kij,kaij->kai', anchor_rep, neg_rep)
-                    
-                    # get average over negative samples to find logits
-                    neg_logits = tf.math.reduce_mean(neg_matr, axis=(0, 2))
-                    
-                    # TODO put back in tanh clamping in case things get unstable with InfoNCE
-                    logits = tf.concat([pos_logit, neg_logits], axis=0)
-                    # bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
-                    # loss is negative of first logit, which is positive samp/ anchor
-                    neg_probs = tf.math.negative(tf.nn.log_softmax(logits))
-                    self.rep_loss += neg_probs[0]*Config.REP_LOSS_WEIGHT*0.5
+                # (num_envs , neg_samples, m, nodes)
+                neg_rep = tf.reshape(choose_cnn(PROC_NEG_1)[1], [Config.NUM_ENVS//2, Config.NEGS, Config.REP_LOSS_M, -1])
+                # (num_envs, m) multiply all representation layers across envs, and trajectories
+                pos_matr = tf.einsum('aij,aij->ai', anchor_rep, pos_rep)
 
-        with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-            params = tf.trainable_variables()
-            # Apply custom loss
-            trainer = None
-            if Config.SYNC_FROM_ROOT:
-                trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
-            else:
-                trainer = tf.train.AdamOptimizer( epsilon=1e-5)
-            rep_params = params[:-6]
-            grads_and_var = trainer.compute_gradients(self.rep_loss, rep_params)
-            grads, var = zip(*grads_and_var)
-            if max_grad_norm is not None:
-                grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-            grads_and_var = list(zip(grads, var))
-            _custtrain = trainer.apply_gradients(grads_and_var)
+                # logit for positive sample and anchor
+                pos_logit = tf.expand_dims(tf.reduce_mean(pos_matr), axis=0)
+
+                # (num_envs, neg_samples, m) multiply all representation layers across envs, and trajectories
+                # for each negative sample
+                neg_matr = tf.einsum('kij,kaij->kai', anchor_rep, neg_rep)
+                
+                # get average over negative samples to find logits
+                neg_logits = tf.math.reduce_mean(neg_matr, axis=(0, 2))
+                
+                # TODO put back in tanh clamping in case things get unstable with InfoNCE
+                logits = tf.concat([pos_logit, neg_logits], axis=0)
+                # bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
+                # loss is negative of first logit, which is positive samp/ anchor
+                neg_probs = tf.math.negative(tf.nn.log_softmax(logits))
+                self.rep_loss = neg_probs[0]*Config.REP_LOSS_WEIGHT
+
+            with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+                params = tf.trainable_variables()
+                # Apply custom loss
+                trainer = None
+                if Config.SYNC_FROM_ROOT:
+                    trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
+                else:
+                    trainer = tf.train.AdamOptimizer( epsilon=1e-5)
+                rep_params = params[:-6]
+                grads_and_var = trainer.compute_gradients(self.rep_loss, rep_params)
+                grads, var = zip(*grads_and_var)
+                if max_grad_norm is not None:
+                    grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+                grads_and_var = list(zip(grads, var))
+                _custtrain = trainer.apply_gradients(grads_and_var)
 
         # Used in step
         a0_run = self.pd_run.sample()
@@ -294,7 +315,10 @@ class CnnPolicy(object):
             return sess.run(self.vf_run, {X: ob})
 
         def custom_train(anchors, pos_traj, neg_traj):
-            return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
+            anch_1, anch_2 = np.split(anchors, indices_or_sections=2)
+            pos_1, pos_2 = np.split(pos_traj, indices_or_sections=2)
+            neg_1, neg_2 =  np.split(neg_traj, indices_or_sections=2)
+            return sess.run([self.rep_loss, _custtrain], {ANCHORS_0: anch_1, POST_TRAJ_0: pos_1, NEG_TRAJ_0: neg_1, ANCHORS_1: anch_2, POST_TRAJ_1: pos_2, NEG_TRAJ_1: neg_2})[:-1]
 
 
         self.X = X
