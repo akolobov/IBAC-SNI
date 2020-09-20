@@ -47,6 +47,9 @@ class ConfigSingle(object):
         # Short training for 25M time steps
         bool_keys.append(('short', 'short_training'))
 
+        # Very short training for 5M time steps
+        bool_keys.append(('vshort', 'very_short_training'))
+
         # Bool for using the custom representation loss, if the flag is passed then the loss will be used
         bool_keys.append(('rep_loss', 'custom_rep_loss'))
 
