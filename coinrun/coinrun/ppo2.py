@@ -312,7 +312,9 @@ class Runner(AbstractEnvRunner):
         self.diff_states.append((first_state, last_state))
         # sample state pair
         state_pair = choice(self.diff_states)
-        anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
+        anchors, pos_traj, neg_traj = None, None, None
+        if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
+            anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
         
         # return environment to last state before sampling
         self.env.callmethod("set_state", last_state)
@@ -452,7 +454,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 mbinds = inds[start:end]
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-        if Config.CUSTOM_REP_LOSS:
+        if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
             print('rep loss loop')
             mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
         else:
