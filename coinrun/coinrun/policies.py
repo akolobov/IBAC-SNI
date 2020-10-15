@@ -239,7 +239,7 @@ class CnnPolicy(object):
             # bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
             # loss is negative of first logit, which is positive samp/ anchor
             neg_probs = tf.math.negative(tf.nn.log_softmax(logits))
-            self.rep_loss = neg_probs[0]*Config.REP_LOSS_WEIGHT
+            self.rep_loss = neg_probs[0]*Config.REP_LOSS_WEIGHT*-1
 
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             params = tf.trainable_variables()
