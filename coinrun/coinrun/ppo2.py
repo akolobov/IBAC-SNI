@@ -25,6 +25,27 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 
 from random import choice
 
+def get_avg_rep_vec(state, env, a_n, model):
+    """ Implementation of the 'averaging representation function', which finds the average latent vector
+    of the successor states for a given state, giving an action invariant representation
+    Args:
+        states: List containing the ground truth state for each observation in the current minibatch
+        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
+            class which is defined in train_agent.py
+        a_n: Integer. Used to define a range [0, a_n] actions
+            can take.
+        model: Custom Model object containing the current PPO model. Used to obtain the latent vectors from observations
+    Returns:
+        phi_bar: the average of the latent vectors for all the successor states of our input state
+    """
+    phi_bar = np.zeros((Config.NUM_ENVS, Config.NUM_STEPS))
+    for a in range(a_n):
+        # sample o_i ~ T(s, a_i)
+        env.callmethod("set_state", state)
+        o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*a)
+        phi_i = model.rep_vec(o_i)
+        phi_bar += phi_i/a_n
+    return phi_bar
 
 def custom_loss(state_pair, env, actions_shape, a_n):
     """ Implementation of the custom loss, designed to measure the distance between two
@@ -223,13 +244,13 @@ class Model(object):
 
         
         
-        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
+        def train(lr, cliprange, obs, phi_bars, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+            td_map = {train_model.X:obs, train_model.AVG_REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
                     CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
@@ -261,6 +282,7 @@ class Model(object):
         self.save = save
         self.load = load
         self.custom_train = train_model.custom_train
+        self.rep_vec = act_model.rep_vec
 
         if Config.SYNC_FROM_ROOT:
             if MPI.COMM_WORLD.Get_rank() == 0:
@@ -286,14 +308,22 @@ class Runner(AbstractEnvRunner):
     def run(self, update_frac):
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
-        mb_states = self.states
+        mb_states = []
         epinfos = []
-        first_state = self.env.callmethod("get_state")
+        mb_phi_bars = []
+        #first_state = self.env.callmethod("get_state")
         # For n in range number of steps
         for _ in range(self.nsteps):
+            # collect the ground truth state for each observation
+            curr_state = self.env.callmethod("get_state")
+            mb_states.append(curr_state)
+            phi_bar = get_avg_rep_vec(curr_state, self.env, self.env.action_space.n, self.model)
+            # return environment to last state after sampling
+            mb_phi_bars.append(phi_bar)
+            self.env.callmethod("set_state", curr_state)
             # Given observations, get action value and neglopacs
             # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, self.states, self.dones)
+            actions, values, self.states, neglogpacs = self.model.step(self.obs, phi_bar, update_frac, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -303,29 +333,33 @@ class Runner(AbstractEnvRunner):
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
             self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            
+            
             for info in infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(rewards)
-        last_state = self.env.callmethod("get_state")
-        # Add in first & last state from trajectory
-        self.diff_states.append((first_state, last_state))
-        # sample state pair
-        state_pair = choice(self.diff_states)
-        anchors, pos_traj, neg_traj = None, None, None
-        if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
-            anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
         
-        # return environment to last state before sampling
-        self.env.callmethod("set_state", last_state)
+        #last_state = self.env.callmethod("get_state")
+        # Add in first & last state from trajectory
+        #self.diff_states.append((first_state, last_state))
+        # sample state pair
+        #state_pair = choice(self.diff_states)
+        anchors, pos_traj, neg_traj = None, None, None
+        # if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
+        #     anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
+        
+        # # return environment to last state after sampling
+        # self.env.callmethod("set_state", last_state)
         #batch of steps to batch of rollouts
+        mb_phi_bars = np.concatenate(mb_phi_bars, axis=0)
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
-        last_values = self.model.value(self.obs, update_frac, self.states, self.dones)
+        last_values = self.model.value(self.obs, phi_bar, update_frac, self.states, self.dones)
         # discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
@@ -342,7 +376,7 @@ class Runner(AbstractEnvRunner):
         mb_returns = mb_advs + mb_values
 
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
-            mb_states, epinfos), anchors, pos_traj, neg_traj
+            mb_phi_bars, epinfos), anchors, pos_traj, neg_traj
 
 def sf01(arr):
     """
@@ -431,7 +465,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         run_tstart = time.time()
 
         packed, anchors, pos_traj, neg_traj = runner.run(update_frac=update/nupdates)
-        obs, returns, masks, actions, values, neglogpacs, states, epinfos = packed
+        obs, returns, masks, actions, values, neglogpacs, phi_bars, epinfos = packed
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
 
@@ -452,12 +486,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 sess.run([model.train_model.train_dropout_assign_ops])
                 end = start + nbatch_train
                 mbinds = inds[start:end]
-                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                slices = (arr[mbinds] for arr in (obs, phi_bars, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-        if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
-            print('rep loss loop')
-            mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
-            print('custom reward', mean_cust_loss)
+        # if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
+        #     print('rep loss loop')
+        #     mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
+        #     print('custom reward', mean_cust_loss)
         else:
             mean_cust_loss = 0
         # update the dropout mask

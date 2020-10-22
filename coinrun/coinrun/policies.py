@@ -6,6 +6,7 @@ from baselines.common.input import observation_input
 from coinrun.ppo2 import MpiAdamOptimizer
 ds = tf.contrib.distributions
 from mpi4py import MPI
+from gym.spaces import Discrete, Box
 
 
 from coinrun.config import Config
@@ -129,7 +130,8 @@ class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
         self.pdtype = make_pdtype(ac_space)
 
-        
+        # explicitly create  vector space for latent vectors
+        latent_space = Box(-np.inf, np.inf, shape=(256,))
         # So that I can compute the saliency map
         if Config.REPLAY:
             X = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='Ob')
@@ -143,15 +145,19 @@ class CnnPolicy(object):
             ANCHORS, PROC_ANCH = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='anch')
             POST_TRAJ, PROC_POS = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='pos_traj')
             NEG_TRAJ, PROC_NEG = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS*Config.NEGS, name='neg_traj')
-
-
+            print('bob', ob_space)
+            print(type(ob_space))
+            AVG_REPS, AVG_REP_PROC = observation_input(latent_space, nbatch)
+            # observation input 
         with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
             # stack together action invariant & conditioned layers for full representation layer
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
-            self.h_vf = self.h
+            # concat average phi vector
+            self.h_avg = tf.concat([self.h, AVG_REP_PROC], axis=1)
+            self.h_vf = self.h_avg
             # Noisy policy and value function for train
             if Config.BETA >= 0:
                 pdparam = _matching_fc(self.h, 'pi', ac_space.n, init_scale=1.0, init_bias=0)
@@ -165,8 +171,8 @@ class CnnPolicy(object):
                 self.pd_train.neglogp = lambda a: - self.pd_train.log_prob(a)
                 self.vf_train = tf.reduce_mean(tf.reshape(fc(self.h, 'v', 1), shape=(Config.NR_SAMPLES, -1, 1)), 0)[:, 0]
             else:
-                self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
-                self.vf_train = fc(self.h, 'v', 1)[:, 0]
+                self.pd_train, _ = self.pdtype.pdfromlatent(self.h_avg, init_scale=0.01)
+                self.vf_train = fc(self.h_avg, 'v', 1)[:, 0]
 
             if Config.SNI:
                 assert Config.DROPOUT == 0
@@ -262,14 +268,17 @@ class CnnPolicy(object):
         neglogp0_run = self.pd_run.neglogp(a0_run)
         self.initial_state = None
 
-        def step(ob, update_frac, *_args, **_kwargs):
+        def step(ob, phi_bar, update_frac, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
-            a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
+            a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob, AVG_REP_PROC: phi_bar})
             return a, v, self.initial_state, neglogp
 
-        def value(ob, update_frac, *_args, **_kwargs):
-            return sess.run(self.vf_run, {X: ob})
+        def rep_vec(ob, *_args, **_kwargs):
+            return sess.run(self.h, {X: ob})
+
+        def value(ob, phi_bar, update_frac, *_args, **_kwargs):
+            return sess.run(self.vf_run, {X: ob, AVG_REP_PROC: phi_bar})
 
         def custom_train(anchors, pos_traj, neg_traj):
             return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
@@ -283,6 +292,8 @@ class CnnPolicy(object):
         self.step = step
         self.value = value
         self.custom_train = custom_train
+        self.rep_vec = rep_vec
+        self.AVG_REP_PROC = AVG_REP_PROC
 
 
 def get_policy():
