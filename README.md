@@ -1,6 +1,6 @@
 # Introduction 
 
-This codebase is for a custom research project, built off of IBAC-SNI
+This codebase is for a custom research project, built off of the IBAC-SNI repo
 
 
 ## Plotting
@@ -30,7 +30,7 @@ Also, in `coinrun/coinrun/config.py` set the `self.WORKDIR` and `self.TB_DIR` va
 To reproduce the results, run on a NC24 with 4 GPUs (3 will be used for training, one for testing):
 ```
 export env=<env>
-mpiexec -n 4 python3 -m coinrun.train_agent --env ${env} --run-id baseline --num-levels 0 --short 
+mpiexec -n 1 python3 -m coinrun.train_agent --env starpilot --run-id baseline --num-levels 0 --short 
 RCALL_NUM_GPU=4 mpiexec -n 4 python3 -m coinrun.train_agent --env ${env} --run-id baseline --num-levels 200 --test --short --l2 0.0001 -uda 1
 RCALL_NUM_GPU=4 mpiexec -n 4 python3 -m coinrun.train_agent --env ${env} --run-id ibac-sni-lambda0.5 --num-levels 200 --test --short --l2 0.0001 -uda 1 --beta 0.0001 --nr-samples 12 --sni
 RCALL_NUM_GPU=4 mpiexec -n 4 python3 -m coinrun.train_agent --env ${env} --run-id ibac-sni-lambda1.0 --num-levels 200 --test --l2 0.0001 -uda 1 --beta-l2a 0.0001 --short
@@ -49,7 +49,7 @@ with `lambda=0.5` by using `--sni2` or with `lambda=1.0` by using `--openai`.
 Set the environment with `--env <env>`.  The number of levels in the training set is specified with `--num-levels <num>`,
 and you can train on the entire level distribution by setting this flag to 0.
 
-Using `--long` runs for 200M time steps and `--short` runs for 25M time steps.  The experiments, especially with the `--long` flag, take a while. If it's run on the VMs, it will
+Using `--long` runs for 200M time steps and `--short` runs for 25M time steps and `--vshort` runs for 5M time steps.  The experiments, especially with the `--long` flag, take a while. If it's run on the VMs, it will
 likely crash at some point (around 6pm is particularly likely), probably because the servers are
 preemtible.
 If they do, you can restart with the additional arguments `--restore-id <run-id>` and

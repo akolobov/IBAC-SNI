@@ -125,10 +125,12 @@ def main():
     seed = int(time.time()) % 10000
     set_global_seeds(seed * 100 + rank)
 
+    # coinrun version, allows you to specify how many GPUs you want this run to use
     #utils.setup_mpi_gpus()
+
+    # baselines version, just sets the number of GPUs to the -n flag 
     #setup_mpi_gpus()
-    gpus = [x for x in range(Config.NUM_GPUS)]
-    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpus))
+    os.environ["CUDA_VISIBLE_DEVICES"] = "{}".format(Config.NUM_GPUS)
     
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True # pylint: disable=E1101

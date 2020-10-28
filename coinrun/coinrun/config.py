@@ -1,13 +1,15 @@
 from mpi4py import MPI
 import argparse
 import os
-
+import datetime
 class ConfigSingle(object):
     """
     A global config object that can be initialized from command line arguments or
     keyword arguments.
     """
     def __init__(self):
+        #self.WORKDIR = './results-procgen/saved_models-{}-{}'.format("starpilot", datetime.datetime.now().timestamp())
+        #self.TB_DIR =  './results-procgen/tb_log-{}-{}'.format("starpilot", datetime.datetime.now().timestamp())
         self.WORKDIR = './results-procgen/saved_models'
         self.TB_DIR =  './results-procgen/tb_log'
         if not os.path.exists(self.WORKDIR):
@@ -56,8 +58,8 @@ class ConfigSingle(object):
         # Weighting value for the custom presentation loss
         type_keys.append(('rep_lambda', 'rep_loss_weight', float, 1))
 
-        # number of GPUs to use (note this assumes only one process)
-        type_keys.append(('gpus', 'num_gpus', int, 1))
+        # The number of the GPU to be used (default is zero which should be the base GPU)
+        type_keys.append(('gpu', 'num_gpus', int, 0))
 
         # Beta value for Info-loss KL divergence. -1 leaves this loss term out. 0 will probably diverge
         type_keys.append(('b', 'beta', float, -1., True))
