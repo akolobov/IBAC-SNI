@@ -25,6 +25,7 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 
 from random import choice
 
+
 def get_avg_rep_vec(state, env, a_n, model):
     """ Implementation of the 'averaging representation function', which finds the average latent vector
     of the successor states for a given state, giving an action invariant representation
@@ -46,54 +47,6 @@ def get_avg_rep_vec(state, env, a_n, model):
         phi_i = model.rep_vec(o_i)
         phi_bar += phi_i/a_n
     return phi_bar
-
-def custom_loss(state_pair, env, actions_shape, a_n):
-    """ Implementation of the custom loss, designed to measure the distance between two
-    trajectories in the latent representation space of states within the policy network
-    Args:
-        state_pair: Tuple containing two Lists of byte strings containing the first (positive) &
-            last (negative) states we wish to sample/contrast trajectories from
-        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
-            class which is defined in train_agent.py
-        actions_shape: Tuple. Used to define the shape of the action array for one timestep for the 
-            current environment
-        a_n: Integer. Used to define a range [0, a_n] actions
-            can take.
-    Returns:
-        anchors, pos_traj, neg_traj: numpy arrays containing the anchor, positive, and negative trajectories respectively
-    """
-
-    anchor = []
-    pos_traj = []
-    neg_traj = []
-    pos_state, neg_state = state_pair
-
-    # sample anchor
-    env.callmethod("set_state", pos_state)
-    for _ in range(Config.REP_LOSS_M):
-        rand_a_1 = np.random.randint(a_n, size=actions_shape)
-        obs_1, _, _, _ = env.step(rand_a_1)
-        anchor.append(obs_1)
-    
-    # sample positive
-    env.callmethod("set_state", pos_state)
-    for _ in range(Config.REP_LOSS_M):
-        rand_a_2 = np.random.randint(a_n, size=actions_shape)
-        obs_2, _, _, _ = env.step(rand_a_2)
-        pos_traj.append(obs_2)
-
-    # sample negatives
-    for _ in range(Config.NEGS):
-        env.callmethod("set_state", neg_state)
-        for _ in range(Config.REP_LOSS_M):
-            rand_a_3 = np.random.randint(a_n, size=actions_shape)
-            obs_3, _, _, _ = env.step(rand_a_3)
-            neg_traj.append(obs_3)
-
-    anchors = np.concatenate(anchor, axis=0)
-    pos_traj = np.concatenate(pos_traj, axis=0)
-    neg_traj = np.concatenate(neg_traj, axis=0)
-    return anchors, pos_traj, neg_traj
 
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
@@ -136,9 +89,9 @@ class Model(object):
 
         sess = tf.get_default_session()
 
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
+        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm, '2')
         norm_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
+        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm, '2')
 
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.placeholder(tf.float32, [None])
@@ -250,8 +203,12 @@ class Model(object):
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
-            td_map = {train_model.X:obs, train_model.AVG_REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            if Config.CUSTOM_REP_LOSS:
+                td_map = {train_model.X:obs, train_model.AVG_REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            else:
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -281,7 +238,6 @@ class Model(object):
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
-        self.custom_train = train_model.custom_train
         self.rep_vec = act_model.rep_vec
 
         if Config.SYNC_FROM_ROOT:
@@ -311,19 +267,21 @@ class Runner(AbstractEnvRunner):
         mb_states = []
         epinfos = []
         mb_phi_bars = []
-        #first_state = self.env.callmethod("get_state")
         # For n in range number of steps
         for _ in range(self.nsteps):
-            # collect the ground truth state for each observation
-            curr_state = self.env.callmethod("get_state")
-            mb_states.append(curr_state)
-            phi_bar = get_avg_rep_vec(curr_state, self.env, self.env.action_space.n, self.model)
-            # return environment to last state after sampling
-            mb_phi_bars.append(phi_bar)
-            self.env.callmethod("set_state", curr_state)
-            # Given observations, get action value and neglopacs
-            # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, phi_bar, update_frac, self.dones)
+            if Config.CUSTOM_REP_LOSS:
+                # collect the ground truth state for each observation
+                curr_state = self.env.callmethod("get_state")
+                mb_states.append(curr_state)
+                phi_bar = get_avg_rep_vec(curr_state, self.env, self.env.action_space.n, self.model)
+                # return environment to last state after sampling
+                mb_phi_bars.append(phi_bar)
+                self.env.callmethod("set_state", curr_state)
+                # Given observations, get action value and neglopacs
+                # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, phi_bar, update_frac, self.dones)
+            else:
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, self.states, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -340,19 +298,9 @@ class Runner(AbstractEnvRunner):
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(rewards)
         
-        #last_state = self.env.callmethod("get_state")
-        # Add in first & last state from trajectory
-        #self.diff_states.append((first_state, last_state))
-        # sample state pair
-        #state_pair = choice(self.diff_states)
-        anchors, pos_traj, neg_traj = None, None, None
-        # if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
-        #     anchors, pos_traj, neg_traj = custom_loss(state_pair, self.env, actions.shape, self.env.action_space.n)
-        
-        # # return environment to last state after sampling
-        # self.env.callmethod("set_state", last_state)
         #batch of steps to batch of rollouts
-        mb_phi_bars = np.concatenate(mb_phi_bars, axis=0)
+        if Config.CUSTOM_REP_LOSS:
+            mb_phi_bars = np.concatenate(mb_phi_bars, axis=0)
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
@@ -376,7 +324,7 @@ class Runner(AbstractEnvRunner):
         mb_returns = mb_advs + mb_values
 
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
-            mb_phi_bars, epinfos), anchors, pos_traj, neg_traj
+            mb_phi_bars, epinfos)
 
 def sf01(arr):
     """
@@ -446,13 +394,22 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         base_dict = {'datapoints': datapoints}
         utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
 
+    def load_model(filepath='~/jobs/IBAC-SNI/results-procgen/saved_models-baseline-1604882599.982727/sav_baseline_0', sess2= tf.get_default_session()):
+        try:
+            print('working')
+            with tf.compat.v1.variable_scope('model') as critic_scope:
+                test = utils.load_params_for_scope(sess2, critic_scope, filepath)
+                print('dev', test)
+        except filepath is None:
+            print('Enter a valid filepath')
     # For logging purposes, allow restoring of update
     start_update = 0
     if Config.RESTORE_STEP is not None:
         start_update = Config.RESTORE_STEP // nbatch
 
     tb_writer = TB_Writer(sess)
-
+    #
+    #load_model()
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
@@ -464,8 +421,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
 
-        packed, anchors, pos_traj, neg_traj = runner.run(update_frac=update/nupdates)
+        packed = runner.run(update_frac=update/nupdates)
         obs, returns, masks, actions, values, neglogpacs, phi_bars, epinfos = packed
+        avg_value = np.mean(values)
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
 
@@ -486,12 +444,13 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 sess.run([model.train_model.train_dropout_assign_ops])
                 end = start + nbatch_train
                 mbinds = inds[start:end]
-                slices = (arr[mbinds] for arr in (obs, phi_bars, returns, masks, actions, values, neglogpacs))
+                if Config.CUSTOM_REP_LOSS:
+                    slices = (arr[mbinds] for arr in (obs, phi_bars, returns, masks, actions, values, neglogpacs))
+                else:
+                    # create dummy variable from obs
+                    notused = obs
+                    slices = (arr[mbinds] for arr in (obs, notused, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-        # if Config.CUSTOM_REP_LOSS and Config.NEGS > 0 and Config.REP_LOSS_WEIGHT > 0:
-        #     print('rep loss loop')
-        #     mean_cust_loss = model.train_model.custom_train(anchors, pos_traj, neg_traj)[0]
-        #     print('custom reward', mean_cust_loss)
         else:
             mean_cust_loss = 0
         # update the dropout mask
@@ -517,7 +476,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             datapoints.append([step, rew_mean_10])
             tb_writer.log_scalar(ep_len_mean, 'ep_len_mean', step=step)
             tb_writer.log_scalar(fps, 'fps', step=step)
-            tb_writer.log_scalar(mean_cust_loss, 'mean_custom_loss', step=step)
+            tb_writer.log_scalar(avg_value, 'avg_value', step=step)
 
             mpi_print('time_elapsed', tnow - tfirststart, run_t_total, train_t_total)
             mpi_print('timesteps', update*nsteps, total_timesteps)

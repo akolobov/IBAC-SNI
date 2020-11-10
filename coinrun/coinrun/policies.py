@@ -127,7 +127,7 @@ def choose_cnn(images):
 
 
 class CnnPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, model_num, **conv_kwargs): #pylint: disable=W0613
         self.pdtype = make_pdtype(ac_space)
 
         # explicitly create  vector space for latent vectors
@@ -142,14 +142,9 @@ class CnnPolicy(object):
             NEG_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
         else:
             X, processed_x = observation_input(ob_space, nbatch)
-            ANCHORS, PROC_ANCH = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='anch')
-            POST_TRAJ, PROC_POS = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS, name='pos_traj')
-            NEG_TRAJ, PROC_NEG = observation_input(ob_space, Config.REP_LOSS_M*Config.NUM_ENVS*Config.NEGS, name='neg_traj')
-            print('bob', ob_space)
-            print(type(ob_space))
             AVG_REPS, AVG_REP_PROC = observation_input(latent_space, nbatch)
             # observation input 
-        with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+        with tf.variable_scope("model{}".format(model_num), reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
@@ -157,7 +152,7 @@ class CnnPolicy(object):
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
             # concat average phi vector
             self.h_avg = tf.concat([self.h, AVG_REP_PROC], axis=1)
-            self.h_vf = self.h_avg
+            #self.h_vf = self.h_avg
 
             # NOTE: (Ahmed) I commented out all the IBAC-SNI settings to make this easier to read
             # since we shouldn't be using any of these settings anyway.
@@ -176,7 +171,11 @@ class CnnPolicy(object):
             #     self.pd_train.neglogp = lambda a: - self.pd_train.log_prob(a)
             #     self.vf_train = tf.reduce_mean(tf.reshape(fc(self.h, 'v', 1), shape=(Config.NR_SAMPLES, -1, 1)), 0)[:, 0]
             # else:
-            self.pd_train, _ = self.pdtype.pdfromlatent(self.h_avg, init_scale=0.01)
+
+            if Config.CUSTOM_REP_LOSS:
+                self.pd_train, _ = self.pdtype.pdfromlatent(self.h_avg, init_scale=0.01)
+            else:
+                self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
             self.vf_train = fc(self.h, 'v', 1)[:, 0]
 
             # if Config.SNI:
@@ -219,58 +218,6 @@ class CnnPolicy(object):
             # For Dropout: Always change layer, so slow layer is never used
             self.run_dropout_assign_ops = []
 
-
-        # Old aidl version
-        # with tf.variable_scope("model", reuse=True) as scope:
-        #     y = tf.constant([1.0, 0.0])
-        #     _, anchor_rep, _, _ = choose_cnn(PROC_ANCH)
-            
-        #     _, pos_rep, _, _ = choose_cnn(PROC_POS)
-    
-        #     _, neg_rep, _, _ = choose_cnn(PROC_NEG)
-
-        #     # (num_envs, m, nodes)
-        #     anchor_rep = tf.reshape(anchor_rep, [Config.NUM_ENVS, Config.REP_LOSS_M, -1])
-        #     pos_rep = tf.reshape(pos_rep, [Config.NUM_ENVS, Config.REP_LOSS_M, -1])
-
-        #     # (neg_samples, num_envs, m, nodes)
-        #     neg_rep = tf.reshape(neg_rep, [Config.NEGS, Config.NUM_ENVS, Config.REP_LOSS_M, -1])
-
-        #     # (num_envs, m) multiply all representation layers across envs, and trajectories
-        #     pos_matr = tf.einsum('aij,aij->ai', anchor_rep, pos_rep)
-
-        #     # logit for positive sample and anchor
-        #     pos_logit = tf.expand_dims(tf.reduce_mean(pos_matr), axis=0)
-        #     # (neg_samples, num_envs, m) multiply all representation layers across envs, and trajectories
-        #     # for each negative sample
-        #     neg_matr = tf.einsum('aij,kaij->kai', anchor_rep, neg_rep)
-            
-        #     # get average over negative samples to find logits
-        #     neg_logits = tf.math.reduce_mean(neg_matr, axis=(1, 2))
-            
-        #     # TODO put back in tanh clamping in case things get unstable with InfoNCE
-        #     logits = tf.concat([pos_logit, neg_logits], axis=0)
-        #     # bce = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logit)
-        #     # loss is negative of first logit, which is positive samp/ anchor
-        #     neg_probs = tf.math.negative(tf.nn.log_softmax(logits))
-        #     self.rep_loss = neg_probs[0]*Config.REP_LOSS_WEIGHT*-1
-
-        # with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-        #     params = tf.trainable_variables()
-        #     # Apply custom loss
-        #     trainer = None
-        #     if Config.SYNC_FROM_ROOT:
-        #         trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
-        #     else:
-        #         trainer = tf.train.AdamOptimizer( epsilon=1e-5)
-        #     rep_params = params[:-6]
-        #     grads_and_var = trainer.compute_gradients(self.rep_loss, rep_params)
-        #     grads, var = zip(*grads_and_var)
-        #     if max_grad_norm is not None:
-        #         grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-        #     grads_and_var = list(zip(grads, var))
-        #     _custtrain = trainer.apply_gradients(grads_and_var)
-
         # Used in step
         a0_run = self.pd_run.sample()
         neglogp0_run = self.pd_run.neglogp(a0_run)
@@ -279,7 +226,10 @@ class CnnPolicy(object):
         def step(ob, phi_bar, update_frac, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
-            a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob, AVG_REP_PROC: phi_bar})
+            if Config.CUSTOM_REP_LOSS:
+                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob, AVG_REP_PROC: phi_bar})
+            else:
+                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
             return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):
@@ -288,18 +238,11 @@ class CnnPolicy(object):
         def value(ob, update_frac, *_args, **_kwargs):
             return sess.run(self.vf_run, {X: ob})
 
-        def custom_train(anchors, pos_traj, neg_traj):
-            return sess.run([self.rep_loss, _custtrain], {ANCHORS: anchors, POST_TRAJ: pos_traj, NEG_TRAJ: neg_traj})[:-1]
-
 
         self.X = X
-        self.ANCHORS = ANCHORS
-        self.POST_TRAJ = POST_TRAJ
-        self.NEG_TRAJ = NEG_TRAJ
         self.processed_x = processed_x
         self.step = step
         self.value = value
-        self.custom_train = custom_train
         self.rep_vec = rep_vec
         self.AVG_REP_PROC = AVG_REP_PROC
 
