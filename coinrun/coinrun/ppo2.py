@@ -8,6 +8,10 @@ import numpy as np
 import tensorflow as tf
 from collections import deque
 import gym3
+from PIL import Image
+import ffmpeg
+import datetime
+
 
 from mpi4py import MPI
 
@@ -18,6 +22,9 @@ from coinrun.config import Config
 
 mpi_print = utils.mpi_print
 
+import subprocess
+import sys
+import os
 from baselines.common.runners import AbstractEnvRunner
 from baselines.common.tf_util import initialize
 from baselines.common.mpi_util import sync_from_root
@@ -25,8 +32,29 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 
 from random import choice
 
+# helper function to turn numpy array into video file
+def vidwrite(filename, images, framerate=60, vcodec='libx264'):
+    if not isinstance(images, np.ndarray):
+        images = np.asarray(images)
+    n,height,width,channels = images.shape
+    process = (
+        ffmpeg
+            .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(width, height))
+            .output(filename, pix_fmt='yuv420p', vcodec=vcodec, r=framerate)
+            .overwrite_output()
+            .run_async(pipe_stdin=True)
+    )
+    for frame in images:
+        process.stdin.write(
+            frame
+                .astype(np.uint8)
+                .tobytes()
+        )
+    process.stdin.close()
+    process.wait()
 
-def get_avg_rep_vec(state, env, a_n, model):
+
+def get_avg_rep_vec(state, env, a_n, model, weight=1, dropout=False):
     """ Implementation of the 'averaging representation function', which finds the average latent vector
     of the successor states for a given state, giving an action invariant representation
     Args:
@@ -36,17 +64,64 @@ def get_avg_rep_vec(state, env, a_n, model):
         a_n: Integer. Used to define a range [0, a_n] actions
             can take.
         model: Custom Model object containing the current PPO model. Used to obtain the latent vectors from observations
+        weight: float from 0 to 1 determining how much we weight the phi_bar vector before returning
+        dropout: Boolean indicating whether we want to "dropout" our latent augmentation and replace it with a random standard normal
+        vector instead. Useful for avoiding overfitting to the initial state distribution. 
     Returns:
         phi_bar: the average of the latent vectors for all the successor states of our input state
     """
-    phi_bar = np.zeros((Config.NUM_ENVS, Config.NUM_STEPS))
-    for a in range(a_n):
-        # sample o_i ~ T(s, a_i)
+    if dropout:
+        # sample bernoulli 
+        bernoulli = np.random.binomial(1, 0.5)
+        if bernoulli == 1:
+            phi_bar = np.zeros((Config.NUM_ENVS, Config.NUM_STEPS))
+            for a in range(a_n):
+                # sample o_i ~ T(s, a_i)
+                env.callmethod("set_state", state)
+                o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*a)
+                phi_i = model.rep_vec(o_i)
+                phi_bar += phi_i/a_n
+        else:
+            phi_bar = np.random.normal(size=(Config.NUM_ENVS, Config.NUM_STEPS))
+    else:
         env.callmethod("set_state", state)
-        o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*a)
-        phi_i = model.rep_vec(o_i)
-        phi_bar += phi_i/a_n
-    return phi_bar
+        o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*4)
+        phi_bar = model.rep_vec(o_i)
+        # for _ in range(a_n):
+        #     # sample o_i ~ T(s, a_i)
+        #     env.callmethod("set_state", state)
+        #     o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*4)
+        #     phi_i = model.rep_vec(o_i)
+        #     phi_bar += phi_i/a_n
+    return phi_bar*weight
+
+
+def get_latents_and_acts(state, env, a_n, model):
+    """ Helper function to compute the ground truth latent vectors for successor states
+    from a fixed state, as well as track the actions taken to reach those states.
+    Args:
+        state: List containing the ground truth state for the current each observation
+        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
+            class which is defined in train_agent.py
+        a_n: Integer. Used to define a range [0, a_n] actions
+            can take.
+        model: Custom Model object containing the current PPO model. Used to obtain the latent vectors from observations
+    Returns:
+        phi_sp: the latent vector concat with the actions to reach them from s for all the successor states of our input state
+    """
+    phi_sp_list = []
+    for a in range(a_n):
+            # sample o_i ~ T(s, a_i)
+            env.callmethod("set_state", state)
+            o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*a)
+            phi_i = model.rep_vec(o_i)
+
+            # (Num_envs, Latent_Dim)
+            phi_sp_list.append(phi_i)
+
+    # (a_n, num_envs, latent_dim)
+    phi_sps = np.stack(phi_sp_list)
+    return phi_sps
 
 class MpiAdamOptimizer(tf.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
@@ -89,9 +164,8 @@ class Model(object):
 
         sess = tf.get_default_session()
 
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm, '2')
-        norm_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm, '2')
+        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
+        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.placeholder(tf.float32, [None])
@@ -197,18 +271,18 @@ class Model(object):
 
         
         
-        def train(lr, cliprange, obs, phi_bars, returns, masks, actions, values, neglogpacs, states=None):
+        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
-            if Config.CUSTOM_REP_LOSS:
-                td_map = {train_model.X:obs, train_model.AVG_REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
-                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
-            else:
-                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            # if Config.CUSTOM_REP_LOSS:
+            #     td_map = {train_model.X:obs, train_model.REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
+            #             CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            # else:
+            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -239,6 +313,7 @@ class Model(object):
         self.save = save
         self.load = load
         self.rep_vec = act_model.rep_vec
+        self.custom_train = train_model.custom_train
 
         if Config.SYNC_FROM_ROOT:
             if MPI.COMM_WORLD.Get_rank() == 0:
@@ -273,15 +348,13 @@ class Runner(AbstractEnvRunner):
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
-                phi_bar = get_avg_rep_vec(curr_state, self.env, self.env.action_space.n, self.model)
+                phi_bar = get_latents_and_acts(curr_state, self.env, self.env.action_space.n, self.model)
                 # return environment to last state after sampling
                 mb_phi_bars.append(phi_bar)
                 self.env.callmethod("set_state", curr_state)
-                # Given observations, get action value and neglopacs
-                # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-                actions, values, self.states, neglogpacs = self.model.step(self.obs, phi_bar, update_frac, self.dones)
-            else:
-                actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, self.states, self.dones)
+            # Given observations, get action value and neglopacs
+            # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
+            actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -300,8 +373,9 @@ class Runner(AbstractEnvRunner):
         
         #batch of steps to batch of rollouts
         if Config.CUSTOM_REP_LOSS:
-            mb_phi_bars = np.concatenate(mb_phi_bars, axis=0)
+            mb_phi_bars = np.stack(mb_phi_bars)
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
+        #vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
@@ -394,22 +468,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         base_dict = {'datapoints': datapoints}
         utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
 
-    def load_model(filepath='~/jobs/IBAC-SNI/results-procgen/saved_models-baseline-1604882599.982727/sav_baseline_0', sess2= tf.get_default_session()):
-        try:
-            print('working')
-            with tf.compat.v1.variable_scope('model') as critic_scope:
-                test = utils.load_params_for_scope(sess2, critic_scope, filepath)
-                print('dev', test)
-        except filepath is None:
-            print('Enter a valid filepath')
     # For logging purposes, allow restoring of update
     start_update = 0
     if Config.RESTORE_STEP is not None:
         start_update = Config.RESTORE_STEP // nbatch
 
     tb_writer = TB_Writer(sess)
-    #
-    #load_model()
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
@@ -423,6 +487,10 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
         packed = runner.run(update_frac=update/nupdates)
         obs, returns, masks, actions, values, neglogpacs, phi_bars, epinfos = packed
+        # reshape our augmented state vectors to match first dim of observation array
+        # (mb_size*num_envs, num_actions, latent_dim + one_action)
+        if Config.CUSTOM_REP_LOSS:
+            phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, 15, Config.NODES)
         avg_value = np.mean(values)
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
@@ -445,14 +513,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 end = start + nbatch_train
                 mbinds = inds[start:end]
                 if Config.CUSTOM_REP_LOSS:
-                    slices = (arr[mbinds] for arr in (obs, phi_bars, returns, masks, actions, values, neglogpacs))
-                else:
-                    # create dummy variable from obs
-                    notused = obs
-                    slices = (arr[mbinds] for arr in (obs, notused, returns, masks, actions, values, neglogpacs))
+                    mean_cust_loss = model.custom_train(obs[mbinds], phi_bars[mbinds])
+                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
-        else:
-            mean_cust_loss = 0
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
         sess.run([model.train_model.run_dropout_assign_ops])
@@ -477,6 +540,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             tb_writer.log_scalar(ep_len_mean, 'ep_len_mean', step=step)
             tb_writer.log_scalar(fps, 'fps', step=step)
             tb_writer.log_scalar(avg_value, 'avg_value', step=step)
+            tb_writer.log_scalar(mean_cust_loss, 'custom_loss', step=step)
+
 
             mpi_print('time_elapsed', tnow - tfirststart, run_t_total, train_t_total)
             mpi_print('timesteps', update*nsteps, total_timesteps)

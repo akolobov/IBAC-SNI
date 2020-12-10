@@ -8,8 +8,8 @@ class ConfigSingle(object):
     keyword arguments.
     """
     def __init__(self):
-        # self.WORKDIR = './results-procgen/saved_models-{}-{}'.format("avg", datetime.datetime.now().timestamp())
-        # self.TB_DIR =  './results-procgen/tb_log-{}-{}'.format("avg", datetime.datetime.now().timestamp())
+        # self.WORKDIR = './results-procgen/saved_models-{}-{}'.format("pred", datetime.datetime.now().timestamp())
+        # self.TB_DIR =  './results-procgen/tb_log-{}-{}'.format("pred", datetime.datetime.now().timestamp())
         self.WORKDIR = './results-procgen/saved_models'
         self.TB_DIR =  './results-procgen/tb_log'
         if not os.path.exists(self.WORKDIR):
@@ -79,8 +79,8 @@ class ConfigSingle(object):
         # Number of negative examples we want to use for custom loss
         type_keys.append(('negs', 'NEGS', int, 20))
 
-        # Number of hidden units to apply loss to. Assuming representation layer is 256 units
-        type_keys.append(('nodes', 'nodes', int, 128))
+        # Number of hidden units/latent space dim. Assuming representation layer is 256 units
+        type_keys.append(('nodes', 'nodes', int, 256))
 
         # Deactivated because not needed. To re-activate, uncomment line in main_utils.py as well
         # GPU offset: Use RCALL_NUM_GPU, starting from this value

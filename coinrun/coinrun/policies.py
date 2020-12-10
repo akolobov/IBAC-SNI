@@ -11,6 +11,43 @@ from gym.spaces import Discrete, Box
 
 from coinrun.config import Config
 
+
+# augment with action takes in an array of latent vectors and augments them with
+# each of the 15 possible actions in procgen.
+def aug_w_acts(latents, nbatch):
+    # assume latents are (1024, 256)
+    latents_list = []
+    for a in range(15):
+        acts = np.ones((nbatch, 1))*a
+        # (1024, 257)
+        curr_latent = tf.concat((latents, acts), axis=1)
+        latents_list.append(curr_latent)
+    latents_list = tf.stack(latents_list)
+    return latents_list
+
+
+# predictor MLP from SimSiam. Adapted to take in the state representation and 
+# the action 
+def get_predictor():
+    inputs = tf.keras.layers.Input((257, ))
+    x = tf.keras.layers.Dense(512, activation='relu', use_bias=False)(inputs)
+    x = tf.keras.layers.BatchNormalization()(x)
+    p = tf.keras.layers.Dense(256)(x)
+
+    h = tf.keras.Model(inputs, p)
+
+    return h
+
+# cosine similarity from SimSiam where
+# 'z' is the stopgraded element. In our case
+# this is the ground truth average next state
+# latent vector.
+def cos_loss(p, z):
+    z = tf.stop_gradient(z)
+    p = tf.math.l2_normalize(p, axis=1)
+    z = tf.math.l2_normalize(z, axis=1)
+    return -tf.reduce_mean(tf.reduce_sum((p*z), axis=1))
+
 def impala_cnn(images, depths=[16, 32, 32]):
     use_batch_norm = Config.USE_BATCH_NORM == 1
     slow_dropout_assign_ops = []
@@ -127,9 +164,9 @@ def choose_cnn(images):
 
 
 class CnnPolicy(object):
-    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, model_num, **conv_kwargs): #pylint: disable=W0613
+    def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
         self.pdtype = make_pdtype(ac_space)
-
+        self.rep_loss = None
         # explicitly create  vector space for latent vectors
         latent_space = Box(-np.inf, np.inf, shape=(256,))
         # So that I can compute the saliency map
@@ -142,22 +179,17 @@ class CnnPolicy(object):
             NEG_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
         else:
             X, processed_x = observation_input(ob_space, nbatch)
-            AVG_REPS, AVG_REP_PROC = observation_input(latent_space, nbatch)
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 15, 256))
             # observation input 
-        with tf.variable_scope("model{}".format(model_num), reuse=tf.compat.v1.AUTO_REUSE):
+        with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
             # stack together action invariant & conditioned layers for full representation layer
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
-            # concat average phi vector
-            self.h_avg = tf.concat([self.h, AVG_REP_PROC], axis=1)
-            #self.h_vf = self.h_avg
 
             # NOTE: (Ahmed) I commented out all the IBAC-SNI settings to make this easier to read
             # since we shouldn't be using any of these settings anyway.
-
-
             # Noisy policy and value function for train
             # if Config.BETA >= 0:
             #     pdparam = _matching_fc(self.h, 'pi', ac_space.n, init_scale=1.0, init_bias=0)
@@ -171,13 +203,32 @@ class CnnPolicy(object):
             #     self.pd_train.neglogp = lambda a: - self.pd_train.log_prob(a)
             #     self.vf_train = tf.reduce_mean(tf.reshape(fc(self.h, 'v', 1), shape=(Config.NR_SAMPLES, -1, 1)), 0)[:, 0]
             # else:
-
-            if Config.CUSTOM_REP_LOSS:
-                self.pd_train, _ = self.pdtype.pdfromlatent(self.h_avg, init_scale=0.01)
-            else:
-                self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
+            self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
             self.vf_train = fc(self.h, 'v', 1)[:, 0]
 
+            if Config.CUSTOM_REP_LOSS:
+                with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+                    pred_h = get_predictor()
+                    aug_h = aug_w_acts(self.h, nbatch)
+                    
+                    aug_h = tf.reshape(aug_h, [-1, 257])
+                    pred_latents = pred_h(aug_h)
+                    pred_latents = tf.reshape(pred_latents, [-1, 15, 256])
+                    self.rep_loss = cos_loss(pred_latents,  REP_PROC)
+                    # backprop aux loss on all parameters
+                    params = tf.trainable_variables()
+                    # Apply custom loss
+                    trainer = None
+                    if Config.SYNC_FROM_ROOT:
+                        trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
+                    else:
+                        trainer = tf.train.AdamOptimizer( epsilon=1e-5)
+                    grads_and_var = trainer.compute_gradients(self.rep_loss, params)
+                    grads, var = zip(*grads_and_var)
+                    if max_grad_norm is not None:
+                        grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+                    grads_and_var = list(zip(grads, var))
+                    _custtrain = trainer.apply_gradients(grads_and_var)
             # if Config.SNI:
             #     assert Config.DROPOUT == 0
             #     assert not Config.OPENAI
@@ -226,10 +277,7 @@ class CnnPolicy(object):
         def step(ob, phi_bar, update_frac, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
-            if Config.CUSTOM_REP_LOSS:
-                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob, AVG_REP_PROC: phi_bar})
-            else:
-                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
+            a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
             return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):
@@ -238,13 +286,16 @@ class CnnPolicy(object):
         def value(ob, update_frac, *_args, **_kwargs):
             return sess.run(self.vf_run, {X: ob})
 
+        def custom_train(ob, rep_vecs):
+            return sess.run([self.rep_loss], {X: ob, REP_PROC: rep_vecs})[0]
 
         self.X = X
         self.processed_x = processed_x
         self.step = step
         self.value = value
         self.rep_vec = rep_vec
-        self.AVG_REP_PROC = AVG_REP_PROC
+        self.REP_PROC = REP_PROC
+        self.custom_train = custom_train
 
 
 def get_policy():
