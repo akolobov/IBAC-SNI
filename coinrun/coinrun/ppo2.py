@@ -11,6 +11,11 @@ import gym3
 from PIL import Image
 import ffmpeg
 import datetime
+# from keras import backend as K
+# from keras.engine.topology import Layer
+#from tensorflow.keras.layers import Flatten
+
+
 
 
 from mpi4py import MPI
@@ -110,27 +115,35 @@ def get_latents_and_acts(state, env, a_n, model):
         phi_sp: the latent vector concat with the actions to reach them from s for all the successor states of our input state
     """
     phi_sp_list = []
+    rewards_per_env = np.empty(shape=(1,))
     for a in range(a_n):
             # sample o_i ~ T(s, a_i)
             env.callmethod("set_state", state)
-            o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*a)
+            o_i, rewards, dones, infos = env.step(np.ones((Config.NUM_ENVS,))*a)
+            curr_reward = np.average(rewards)
+            rewards_per_env = np.append(arr=rewards_per_env, values=curr_reward,)
             phi_i = model.rep_vec(o_i)
-
+            
+            acts = np.ones(shape=(Config.NUM_ENVS, 1))*a
+            phi_i = np.concatenate([phi_i, acts], axis=1)
+            
             # (Num_envs, Latent_Dim)
             phi_sp_list.append(phi_i)
 
-    # (a_n, num_envs, latent_dim)
-    phi_sps = np.stack(phi_sp_list)
+
+    reward = np.argmax(rewards_per_env)
+    # (num_envs, latent_dim)
+    phi_sps = phi_sp_list[reward-1]
     return phi_sps
 
-class MpiAdamOptimizer(tf.train.AdamOptimizer):
+class MpiAdamOptimizer(tf.compat.v1.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
     def __init__(self, comm, **kwargs):
         self.comm = comm
         self.train_frac = 1.0 - Config.get_test_frac()
-        tf.train.AdamOptimizer.__init__(self, **kwargs)
+        tf.compat.v1.train.AdamOptimizer.__init__(self, **kwargs)
     def compute_gradients(self, loss, var_list, **kwargs):
-        grads_and_vars = tf.train.AdamOptimizer.compute_gradients(self, loss, var_list, **kwargs)
+        grads_and_vars = tf.compat.v1.train.AdamOptimizer.compute_gradients(self, loss, var_list, **kwargs)
 
         grads_and_vars = [(g, v) for g, v in grads_and_vars if g is not None]
         flat_grad = tf.concat([tf.reshape(g, (-1,)) for g, v in grads_and_vars], axis=0)
@@ -149,7 +162,7 @@ class MpiAdamOptimizer(tf.train.AdamOptimizer):
             np.divide(buf, float(num_tasks) * self.train_frac, out=buf)
             return buf
 
-        avg_flat_grad = tf.py_func(_collect_grads, [flat_grad], tf.float32)
+        avg_flat_grad = tf.compat.v1.py_func(_collect_grads, [flat_grad], tf.float32)
         avg_flat_grad.set_shape(flat_grad.shape)
         avg_grads = tf.split(avg_flat_grad, sizes, axis=0)
         avg_grads_and_vars = [(tf.reshape(g, v.shape), v)
@@ -157,43 +170,134 @@ class MpiAdamOptimizer(tf.train.AdamOptimizer):
 
         return avg_grads_and_vars
 
+# cosine similarity from SimSiam where
+# 'z' is the stopgraded element. In our case
+# this is the ground truth average next state
+# latent vector.
+def cos_loss(p, z):
+    z = tf.stop_gradient(z)
+    p = tf.math.l2_normalize(p, axis=1)
+    z = tf.math.l2_normalize(z, axis=1)
+    return -tf.reduce_mean(input_tensor=tf.reduce_sum(input_tensor=(p*z), axis=1))
+
+# augment with action takes in an array of latent vectors and augments them with
+# each of the 15 possible actions in procgen.
+def aug_w_acts(latents, nbatch):
+    # assume latents are (1024, 256)
+    latents_list = []
+    for a in range(15):
+        acts = np.ones((nbatch, 1))*a
+        # (1024, 257)
+        curr_latent = tf.concat((latents, acts), axis=1)
+        latents_list.append(curr_latent)
+    latents_list = tf.stack(latents_list)
+    return latents_list
+
+
+# same as above except vectorized
+#def aug_w_acts(latents, nbatch):
+
+
+# bilinear prediction layer 
+def get_predictor():
+    inputs = tf.keras.layers.Input((257, ))
+    #x = tf.keras.layers.Dense(512, activation='relu', use_bias=False)(inputs)
+    #x = tf.keras.layers.BatchNormalization()(x)
+    p = tf.keras.layers.Dense(256)(inputs)
+
+    h = tf.keras.Model(inputs, p)
+
+    return h
+
+# class BilinearModel(Layer):
+#     """
+#     Weighted bilinear model of two inputs. Useful for learning a model of linear interactions between
+#     separate feature types (e.g., texture X spatial) or scales (e.g., dense X dilated), etc.
+#     # taken from: https://github.com/rgmyr/keras-texture/blob/master/texture/layers/bilinearmodel.py?fbclid=IwAR1LtTYPjgKj-dI2Z8BvIzvP7VLZ30HAcOW-tuZILVjGunbhD8LhmJtzfI8
+#     """
+
+#     def __init__(self, l2_normalize=True, **kwargs):
+#         self.l2_normalize = l2_normalize
+#         super(BilinearModel, self).__init__(**kwargs)
+
+#     def build(self, input_shape):
+#         self._shapecheck(input_shape)
+
+#         self.shapeA, self.shapeB = input_shape[0][1], input_shape[1][1]
+
+#         self.weights = self.add_weight(name='outer_prod_weights',
+#                                        shape=(self.shapeA, self.shapeB),
+#                                        initializer='glorot_normal',
+#                                        trainable=True)
+#     def call(self, x):
+#         self._shapecheck(x)
+
+#         weighted_outer = tf.multiply(self.weights, tf.einsum('bi,bj->bij', x[0], x[1]))
+
+#         flat_output = K.Flatten(weighted_outer)
+
+#         if self.l2_normalize:
+#             flat_output = tf.nn.l2_normalize(flat_output, axis=-1)
+
+#         return flat_output
+
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0][0], self.shapeA, self.shapeB)
+
+    def _shapecheck(self,x):
+        # both x and input_shape should be a list of len=2
+        if not isinstance(x, list) or len(x) != 2:
+            raise ValueError('A `BilinearModel` layer should be called on a list of exactly two inputs')
+
+        # if input_shape, check dimensionality
+        if isinstance(x[0], tuple):
+            assert len(x[0]) == 2 and len(x[1]) == 2, '`BilinearModel` input tensors must be 2-D'
+
+        # if x, they should match shapes from build()
+        elif K.is_keras_tensor(x[0]):
+            assert K.ndim(x[0]) == 2 and K.ndim(x[1]) == 2, '`BilinearModel` input tensors must be 2-D'
+            shapeA, shapeB = K.int_shape(x[0])[1], K.int_shape(x[1])[1]
+            if shapeA != self.shapeA or shapeB != self.shapeB:
+                raise ValueError('Unexpected `BilinearModel` input_shape')
+
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
                 nsteps, ent_coef, vf_coef, max_grad_norm):
         self.max_grad_norm = max_grad_norm
 
-        sess = tf.get_default_session()
+        sess = tf.compat.v1.get_default_session()
 
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
+        # in case we don't use rep loss
+        rep_loss = None
         A = train_model.pdtype.sample_placeholder([None])
-        ADV = tf.placeholder(tf.float32, [None])
-        R = tf.placeholder(tf.float32, [None])
-        OLDNEGLOGPAC = tf.placeholder(tf.float32, [None])
-        OLDVPRED = tf.placeholder(tf.float32, [None])
-        LR = tf.placeholder(tf.float32, [])
-        CLIPRANGE = tf.placeholder(tf.float32, [])
-
+        ADV = tf.compat.v1.placeholder(tf.float32, [None])
+        R = tf.compat.v1.placeholder(tf.float32, [None])
+        OLDNEGLOGPAC = tf.compat.v1.placeholder(tf.float32, [None])
+        OLDVPRED = tf.compat.v1.placeholder(tf.float32, [None])
+        LR = tf.compat.v1.placeholder(tf.float32, [])
+        CLIPRANGE = tf.compat.v1.placeholder(tf.float32, [])
         # VF loss
         vpred = train_model.vf_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
         vpredclipped = OLDVPRED + tf.clip_by_value(train_model.vf_train - OLDVPRED, - CLIPRANGE, CLIPRANGE)
         vf_losses1 = tf.square(vpred - R)
         vf_losses2 = tf.square(vpredclipped - R)
-        vf_loss = .5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2))
+        vf_loss = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1, vf_losses2))
 
         neglogpac_train = train_model.pd_train.neglogp(A)
         ratio_train = tf.exp(OLDNEGLOGPAC - neglogpac_train)
         pg_losses_train = -ADV * ratio_train
         pg_losses2_train = -ADV * tf.clip_by_value(ratio_train, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
-        pg_loss = tf.reduce_mean(tf.maximum(pg_losses_train, pg_losses2_train))
-        approxkl_train = .5 * tf.reduce_mean(tf.square(neglogpac_train - OLDNEGLOGPAC))
-        clipfrac_train = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio_train - 1.0), CLIPRANGE)))
+        pg_loss = tf.reduce_mean(input_tensor=tf.maximum(pg_losses_train, pg_losses2_train))
+        approxkl_train = .5 * tf.reduce_mean(input_tensor=tf.square(neglogpac_train - OLDNEGLOGPAC))
+        clipfrac_train = tf.reduce_mean(input_tensor=tf.cast(tf.greater(tf.abs(ratio_train - 1.0), CLIPRANGE), dtype=tf.float32))
 
         if Config.BETA >= 0:
-            entropy = tf.reduce_mean(train_model.pd_train._components_distribution.entropy())
+            entropy = tf.reduce_mean(input_tensor=train_model.pd_train._components_distribution.entropy())
         else:
-            entropy = tf.reduce_mean(train_model.pd_train.entropy())
+            entropy = tf.reduce_mean(input_tensor=train_model.pd_train.entropy())
 
         # Add entropy and policy loss for the samples as well
         if Config.SNI or Config.SNI2:
@@ -202,19 +306,39 @@ class Model(object):
             pg_losses_run = -ADV * ratio_run
             pg_losses2_run = -ADV * tf.clip_by_value(ratio_run, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
 
-            pg_loss += tf.reduce_mean(tf.maximum(pg_losses_run, pg_losses2_run))
+            pg_loss += tf.reduce_mean(input_tensor=tf.maximum(pg_losses_run, pg_losses2_run))
             pg_loss /= 2.
 
-            entropy += tf.reduce_mean(train_model.pd_run.entropy())
+            entropy += tf.reduce_mean(input_tensor=train_model.pd_run.entropy())
             entropy /= 2.
 
-            approxkl_run = .5 * tf.reduce_mean(tf.square(neglogpac_run - OLDNEGLOGPAC))
-            clipfrac_run = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio_run - 1.0), CLIPRANGE)))
+            approxkl_run = .5 * tf.reduce_mean(input_tensor=tf.square(neglogpac_run - OLDNEGLOGPAC))
+            clipfrac_run = tf.reduce_mean(input_tensor=tf.cast(tf.greater(tf.abs(ratio_run - 1.0), CLIPRANGE), dtype=tf.float32))
         else:
             approxkl_run = tf.constant(0.)
             clipfrac_run = tf.constant(0.)
 
-        params = tf.trainable_variables()
+        # custom rep loss
+        if Config.CUSTOM_REP_LOSS:
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 257))
+            pred_h = get_predictor()
+            acts = REP_PROC[:, 255:256]
+            
+            aug_h = tf.concat([train_model.h, acts], axis=1)
+            
+            # (nbatch_train, 257)
+            pred_latents = pred_h(aug_h)
+
+            pred_latents = tf.reshape(pred_latents, [-1, 256])
+
+            # (nbatch_train, 256)
+            phi_s = REP_PROC[:, :-1]
+    
+            rep_loss = cos_loss(pred_latents,  phi_s)
+
+        # cosine similarity loss
+
+        params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
 
         total_num_params = 0
@@ -227,19 +351,19 @@ class Model(object):
 
         mpi_print('total num params:', total_num_params)
 
-        l2_loss = tf.reduce_sum([tf.nn.l2_loss(v) for v in weight_params])
+        l2_loss = tf.reduce_sum(input_tensor=[tf.nn.l2_loss(v) for v in weight_params])
 
         # The first occurance should be in the train_model
 
         if Config.BETA >= 0:
-            info_loss = tf.get_collection(
+            info_loss = tf.compat.v1.get_collection(
                 key="INFO_LOSS",
                 scope="model/info_loss"
             )
             beta = Config.BETA
 
         elif Config.BETA_L2A >= 0:
-            info_loss = tf.get_collection(
+            info_loss = tf.compat.v1.get_collection(
                 key="INFO_LOSS_L2A",
                 scope="model/info_loss"
             )
@@ -252,12 +376,15 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
+        if Config.CUSTOM_REP_LOSS:
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*0.0001
+        else:
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
         else:
-            trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
+            trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         
         self.opt = trainer
         grads_and_var = trainer.compute_gradients(loss, params)
@@ -271,27 +398,34 @@ class Model(object):
 
         
         
-        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
+        def train(lr, cliprange, obs, phi_bars, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
-            # if Config.CUSTOM_REP_LOSS:
-            #     td_map = {train_model.X:obs, train_model.REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
-            #             CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
-            # else:
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            if Config.CUSTOM_REP_LOSS:
+                td_map = {train_model.X:obs, REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            else:
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
-            return sess.run(
-                [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
-                td_map
-            )[:-1]
             
-        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv']
+            if Config.CUSTOM_REP_LOSS:
+                return sess.run(
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, _train],
+                    td_map
+                )[:-1]
+            else:
+                return sess.run(
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
+                    td_map
+                )[:-1]
+            
+        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss']
 
         def save(save_path):
             ps = sess.run(params)
@@ -319,8 +453,8 @@ class Model(object):
             if MPI.COMM_WORLD.Get_rank() == 0:
                 initialize()
             
-            global_variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="")
-            sess.run(tf.global_variables_initializer())
+            global_variables = tf.compat.v1.get_collection(tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope="")
+            sess.run(tf.compat.v1.global_variables_initializer())
             sync_from_root(sess, global_variables) #pylint: disable=E1101
         else:
             initialize()
@@ -422,7 +556,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     rank = comm.Get_rank()
     mpi_size = comm.Get_size()
 
-    sess = tf.get_default_session()
+    #tf.compat.v1.disable_v2_behavior()
+    sess = tf.compat.v1.get_default_session()
 
     if isinstance(lr, float): lr = constfn(lr)
     else: assert callable(lr)
@@ -488,9 +623,9 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         packed = runner.run(update_frac=update/nupdates)
         obs, returns, masks, actions, values, neglogpacs, phi_bars, epinfos = packed
         # reshape our augmented state vectors to match first dim of observation array
-        # (mb_size*num_envs, num_actions, latent_dim + one_action)
+        # (mb_size*num_envs, latent_dim + one_action)
         if Config.CUSTOM_REP_LOSS:
-            phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, 15, Config.NODES)
+            phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, Config.NODES+1)
         avg_value = np.mean(values)
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
@@ -513,8 +648,11 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 end = start + nbatch_train
                 mbinds = inds[start:end]
                 if Config.CUSTOM_REP_LOSS:
-                    mean_cust_loss = model.custom_train(obs[mbinds], phi_bars[mbinds])
-                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                    slices = (arr[mbinds] for arr in (obs, phi_bars, returns, masks, actions, values, neglogpacs))
+                else:
+                    # since we don't use phi_bars, use obs as dummy variable
+                    dummy = obs
+                    slices = (arr[mbinds] for arr in (obs, dummy, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])

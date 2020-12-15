@@ -4,49 +4,15 @@ from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch
 from baselines.common.distributions import make_pdtype, _matching_fc
 from baselines.common.input import observation_input
 from coinrun.ppo2 import MpiAdamOptimizer
-ds = tf.contrib.distributions
+# TODO this is no longer supported in tfv2, so we'll need to
+# properly refactor where it's used if we want to use
+# some of the options (e.g. beta)
+#ds = tf.contrib.distributions
 from mpi4py import MPI
 from gym.spaces import Discrete, Box
 
 
 from coinrun.config import Config
-
-
-# augment with action takes in an array of latent vectors and augments them with
-# each of the 15 possible actions in procgen.
-def aug_w_acts(latents, nbatch):
-    # assume latents are (1024, 256)
-    latents_list = []
-    for a in range(15):
-        acts = np.ones((nbatch, 1))*a
-        # (1024, 257)
-        curr_latent = tf.concat((latents, acts), axis=1)
-        latents_list.append(curr_latent)
-    latents_list = tf.stack(latents_list)
-    return latents_list
-
-
-# predictor MLP from SimSiam. Adapted to take in the state representation and 
-# the action 
-def get_predictor():
-    inputs = tf.keras.layers.Input((257, ))
-    x = tf.keras.layers.Dense(512, activation='relu', use_bias=False)(inputs)
-    x = tf.keras.layers.BatchNormalization()(x)
-    p = tf.keras.layers.Dense(256)(x)
-
-    h = tf.keras.Model(inputs, p)
-
-    return h
-
-# cosine similarity from SimSiam where
-# 'z' is the stopgraded element. In our case
-# this is the ground truth average next state
-# latent vector.
-def cos_loss(p, z):
-    z = tf.stop_gradient(z)
-    p = tf.math.l2_normalize(p, axis=1)
-    z = tf.math.l2_normalize(z, axis=1)
-    return -tf.reduce_mean(tf.reduce_sum((p*z), axis=1))
 
 def impala_cnn(images, depths=[16, 32, 32]):
     use_batch_norm = Config.USE_BATCH_NORM == 1
@@ -57,8 +23,8 @@ def impala_cnn(images, depths=[16, 32, 32]):
         out_shape = out.get_shape().as_list()
         var_name = 'mask_{}'.format(name)
         batch_seed_shape = out_shape[1:]
-        batch_seed = tf.get_variable(var_name, shape=batch_seed_shape, initializer=tf.random_uniform_initializer(minval=0, maxval=1), trainable=False)
-        batch_seed_assign = tf.assign(batch_seed, tf.random_uniform(batch_seed_shape, minval=0, maxval=1))
+        batch_seed = tf.compat.v1.get_variable(var_name, shape=batch_seed_shape, initializer=tf.compat.v1.random_uniform_initializer(minval=0, maxval=1), trainable=False)
+        batch_seed_assign = tf.compat.v1.assign(batch_seed, tf.random.uniform(batch_seed_shape, minval=0, maxval=1))
         dout_assign_ops = [batch_seed_assign]
         curr_mask = tf.sign(tf.nn.relu(batch_seed[None,...] - rate))
         curr_mask = curr_mask * (1.0 / (1.0 - rate))
@@ -66,10 +32,10 @@ def impala_cnn(images, depths=[16, 32, 32]):
         return out, dout_assign_ops
 
     def conv_layer(out, depth, i):
-        with tf.variable_scope("conv{}".format(i)):
-            out = tf.layers.conv2d(out, depth, 3, padding='same')
+        with tf.compat.v1.variable_scope("conv{}".format(i)):
+            out = tf.compat.v1.layers.conv2d(out, depth, 3, padding='same')
             if use_batch_norm:
-                out = tf.contrib.layers.batch_norm(out, center=True, scale=True, is_training=True)
+                out = tf.keras.layers.BatchNormalization()(x)
         return out
 
     def residual_block(inputs, twos):
@@ -82,7 +48,7 @@ def impala_cnn(images, depths=[16, 32, 32]):
 
     def conv_sequence(inputs, depth, offsets):
         out = conv_layer(inputs, depth, offsets[0])
-        out = tf.layers.max_pooling2d(out, pool_size=3, strides=2, padding='same')
+        out = tf.compat.v1.layers.max_pooling2d(out, pool_size=3, strides=2, padding='same')
         out = residual_block(out, offsets[1:3])
         out = residual_block(out, offsets[3:5])
         return out
@@ -91,7 +57,7 @@ def impala_cnn(images, depths=[16, 32, 32]):
     for nr, depth in enumerate(depths):
         offsets = [x + 5*nr for x in range(5)]
         out = conv_sequence(out, depth, offsets)
-    out = tf.layers.flatten(out)
+    out = tf.compat.v1.layers.flatten(out)
     out = tf.nn.relu(out)
 
     # if Config.BETA >= 0:
@@ -100,7 +66,7 @@ def impala_cnn(images, depths=[16, 32, 32]):
     #     mu, rho = params[:, :256], params[:, 256:]
     #     encoding = ds.NormalWithSoftplusScale(mu, rho - 5.0)
 
-    #     with tf.variable_scope("info_loss"):
+    #     with tf.compat.v1.variable_scope("info_loss"):
     #         prior = ds.Normal(0.0, 1.0)
     #         info_loss = tf.reduce_sum(tf.reduce_mean(
     #             ds.kl_divergence(encoding, prior), 0)) / np.log(2)
@@ -120,7 +86,7 @@ def impala_cnn(images, depths=[16, 32, 32]):
     # elif Config.BETA_L2A >= 0:
     #     print("Creating L2A regularized layer")
     #     out = tf.layers.dense(out, 256)
-    #     with tf.variable_scope("info_loss"):
+    #     with tf.compat.v1.variable_scope("info_loss"):
     #         info_loss = tf.reduce_sum(tf.reduce_mean(tf.square(out), 0))
     #     tf.add_to_collection("INFO_LOSS_L2A", info_loss)
 
@@ -138,12 +104,12 @@ def impala_cnn(images, depths=[16, 32, 32]):
     #     out_mean, slow_dropout_assign_ops = dropout_openai(latent, rate=Config.DROPOUT, name='slow')
     # else:
     core = out
-    with tf.variable_scope("dense0"):
-        act_invariant = tf.layers.dense(core, Config.NODES)
+    with tf.compat.v1.variable_scope("dense0"):
+        act_invariant = tf.compat.v1.layers.dense(core, Config.NODES)
         act_invariant = tf.identity(act_invariant, name="action_invariant_layers")
         act_invariant = tf.nn.relu(act_invariant)
-    with tf.variable_scope("dense1"):
-        act_condit = tf.layers.dense(core, 256 - Config.NODES)
+    with tf.compat.v1.variable_scope("dense1"):
+        act_condit = tf.compat.v1.layers.dense(core, 256 - Config.NODES)
         act_condit = tf.identity(act_condit, name="action_conditioned_layers")
         act_condit = tf.nn.relu(act_condit)
     return act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assign_ops
@@ -171,17 +137,15 @@ class CnnPolicy(object):
         latent_space = Box(-np.inf, np.inf, shape=(256,))
         # So that I can compute the saliency map
         if Config.REPLAY:
-            X = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='Ob')
+            X = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='Ob')
             processed_x = X
             # create placeholders for custom loss
-            ANCHORS = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='anch')
-            POST_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='post_traj')
-            NEG_TRAJ = tf.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
+            ANCHORS = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='anch')
+            POST_TRAJ = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='post_traj')
+            NEG_TRAJ = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
         else:
-            X, processed_x = observation_input(ob_space, nbatch)
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 15, 256))
-            # observation input 
-        with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+            X, processed_x = observation_input(ob_space, nbatch) 
+        with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
@@ -206,29 +170,23 @@ class CnnPolicy(object):
             self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
             self.vf_train = fc(self.h, 'v', 1)[:, 0]
 
-            if Config.CUSTOM_REP_LOSS:
-                with tf.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-                    pred_h = get_predictor()
-                    aug_h = aug_w_acts(self.h, nbatch)
+            # if Config.CUSTOM_REP_LOSS:
+            #     with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
                     
-                    aug_h = tf.reshape(aug_h, [-1, 257])
-                    pred_latents = pred_h(aug_h)
-                    pred_latents = tf.reshape(pred_latents, [-1, 15, 256])
-                    self.rep_loss = cos_loss(pred_latents,  REP_PROC)
-                    # backprop aux loss on all parameters
-                    params = tf.trainable_variables()
-                    # Apply custom loss
-                    trainer = None
-                    if Config.SYNC_FROM_ROOT:
-                        trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
-                    else:
-                        trainer = tf.train.AdamOptimizer( epsilon=1e-5)
-                    grads_and_var = trainer.compute_gradients(self.rep_loss, params)
-                    grads, var = zip(*grads_and_var)
-                    if max_grad_norm is not None:
-                        grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-                    grads_and_var = list(zip(grads, var))
-                    _custtrain = trainer.apply_gradients(grads_and_var)
+            #         # backprop aux loss on all parameters
+            #         params = tf.compat.v1.trainable_variables()
+            #         # Apply custom loss
+            #         trainer = None
+            #         if Config.SYNC_FROM_ROOT:
+            #             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
+            #         else:
+            #             trainer = tf.compat.v1.train.AdamOptimizer( epsilon=1e-5)
+            #         grads_and_var = trainer.compute_gradients(self.rep_loss, params)
+            #         grads, var = zip(*grads_and_var)
+            #         if max_grad_norm is not None:
+            #             grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+            #         grads_and_var = list(zip(grads, var))
+            #         _custtrain = trainer.apply_gradients(grads_and_var)
             # if Config.SNI:
             #     assert Config.DROPOUT == 0
             #     assert not Config.OPENAI
@@ -294,7 +252,6 @@ class CnnPolicy(object):
         self.step = step
         self.value = value
         self.rep_vec = rep_vec
-        self.REP_PROC = REP_PROC
         self.custom_train = custom_train
 
 

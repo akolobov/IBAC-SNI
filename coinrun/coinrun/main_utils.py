@@ -51,7 +51,7 @@ def load_params_for_scope(sess, scope, load_key='default'):
     return True
 
 def get_savable_params(loaded_params, scope, keep_heads=False):
-    params = tf.trainable_variables(scope)
+    params = tf.compat.v1.trainable_variables(scope)
     filtered_params = []
     filtered_loaded = []
 
@@ -97,7 +97,7 @@ def save_params_in_scopes(sess, scopes, filename, base_dict=None):
     param_dict = {}
 
     for scope in scopes:
-        params = tf.trainable_variables(scope)
+        params = tf.compat.v1.trainable_variables(scope)
 
         if len(params) > 0:
             print('saving scope', scope, filename)
@@ -127,7 +127,7 @@ def tf_initialize(sess):
     
 def sync_from_root(sess, vars=None):
     if vars is None:
-        vars = tf.trainable_variables()
+        vars = tf.compat.v1.trainable_variables()
 
     if Config.SYNC_FROM_ROOT:
         rank = MPI.COMM_WORLD.Get_rank()

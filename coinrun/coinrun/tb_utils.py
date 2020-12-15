@@ -8,9 +8,9 @@ def clean_tb_dir():
     rank = comm.Get_rank()
 
     if rank == 0:
-        if tf.gfile.Exists(Config.TB_DIR):
-            tf.gfile.DeleteRecursively(Config.TB_DIR) 
-        tf.gfile.MakeDirs(Config.TB_DIR)
+        if tf.io.gfile.exists(Config.TB_DIR):
+            tf.io.gfile.rmtree(Config.TB_DIR) 
+        tf.io.gfile.makedirs(Config.TB_DIR)
 
     comm.Barrier()
 
@@ -20,7 +20,7 @@ class TB_Writer(object):
         rank = comm.Get_rank()
 
         # clean_tb_dir()
-        tb_writer = tf.summary.FileWriter(Config.TB_DIR + '/' + Config.RUN_ID + '_' + str(rank), sess.graph)
+        tb_writer = tf.compat.v1.summary.FileWriter(Config.TB_DIR + '/' + Config.RUN_ID + '_' + str(rank), sess.graph)
         total_steps = [0]
 
         # should_log = (rank == 0 or Config.LOG_ALL_MPI)
@@ -32,7 +32,7 @@ class TB_Writer(object):
             hyperparams = np.array(Config.get_arg_text())
             hyperparams_tensor = tf.constant(hyperparams)
 
-            summary_op = tf.summary.text("hyperparameters info", hyperparams_tensor)
+            summary_op = tf.compat.v1.summary.text("hyperparameters info", hyperparams_tensor)
             summary = sess.run(summary_op)
 
             tb_writer.add_summary(summary)
@@ -49,12 +49,12 @@ class TB_Writer(object):
 
         def make_scalar_graph(name):
             if name.startswith("info_loss"):
-                with tf.variable_scope("info_loss"):
-                    scalar_ph = tf.placeholder(name='scalar_' + name, dtype=tf.float32)
+                with tf.compat.v1.variable_scope("info_loss"):
+                    scalar_ph = tf.compat.v1.placeholder(name='scalar_' + name, dtype=tf.float32)
             else:
-                scalar_ph = tf.placeholder(name='scalar_' + name, dtype=tf.float32)
-            scalar_summary = tf.summary.scalar(name, scalar_ph)
-            merged = tf.summary.merge([scalar_summary])
+                scalar_ph = tf.compat.v1.placeholder(name='scalar_' + name, dtype=tf.float32)
+            scalar_summary = tf.compat.v1.summary.scalar(name, scalar_ph)
+            merged = tf.compat.v1.summary.merge([scalar_summary])
             tuples.append((scalar_ph, merged))
 
         # Gives index of name

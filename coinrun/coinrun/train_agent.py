@@ -132,7 +132,7 @@ def main():
     #setup_mpi_gpus()
     os.environ["CUDA_VISIBLE_DEVICES"] = "{}".format(Config.NUM_GPUS)
     
-    config = tf.ConfigProto()
+    config = tf.compat.v1.ConfigProto()
     config.gpu_options.allow_growth = True # pylint: disable=E1101
 
     nenvs = Config.NUM_ENVS
@@ -164,13 +164,13 @@ def main():
     venv = VecNormalize(venv=venv, ob=False)
     
     #sys.exit(0)
-    with tf.Session(config=config) as sess:
+    with tf.compat.v1.Session(config=config) as sess:
         #env = wrappers.add_final_wrappers(env)
         venv = wrappers.add_final_wrappers(venv)
         
         policy = policies.get_policy()
 
-        #sess.run(tf.global_variables_initializer())
+        #sess.run(tf.compat.v1.global_variables_initializer())
         ppo2.learn(policy=policy,
                     env=venv,
                     #env=env,
