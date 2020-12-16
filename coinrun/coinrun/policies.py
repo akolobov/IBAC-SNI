@@ -253,6 +253,7 @@ class CnnPolicy(object):
         self.value = value
         self.rep_vec = rep_vec
         self.custom_train = custom_train
+        self.encoder = choose_cnn
 
 
 def get_policy():

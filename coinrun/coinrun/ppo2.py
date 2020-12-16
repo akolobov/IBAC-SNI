@@ -122,19 +122,23 @@ def get_latents_and_acts(state, env, a_n, model):
             o_i, rewards, dones, infos = env.step(np.ones((Config.NUM_ENVS,))*a)
             curr_reward = np.average(rewards)
             rewards_per_env = np.append(arr=rewards_per_env, values=curr_reward,)
-            phi_i = model.rep_vec(o_i)
-            
-            acts = np.ones(shape=(Config.NUM_ENVS, 1))*a
-            phi_i = np.concatenate([phi_i, acts], axis=1)
-            
             # (Num_envs, Latent_Dim)
-            phi_sp_list.append(phi_i)
+            phi_sp_list.append(o_i)
 
-
+    # create one-hot encoding array for all actions
+    a = np.array([x for x in range(15)])
+    b = np.zeros((a.size, a.max()+1))
+    b[np.arange(a.size),a] = 1
     reward = np.argmax(rewards_per_env)
+
+    # extract one-hot encoding for highest reward action
+    one_hot_a = b[reward-1, :]
+
+    one_hot_actions = np.stack(Config.NUM_ENVS*[one_hot_a])
+
     # (num_envs, latent_dim)
     phi_sps = phi_sp_list[reward-1]
-    return phi_sps
+    return phi_sps, one_hot_actions
 
 class MpiAdamOptimizer(tf.compat.v1.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
@@ -200,10 +204,10 @@ def aug_w_acts(latents, nbatch):
 
 # bilinear prediction layer 
 def get_predictor():
-    inputs = tf.keras.layers.Input((257, ))
+    inputs = tf.keras.layers.Input((271, ))
     #x = tf.keras.layers.Dense(512, activation='relu', use_bias=False)(inputs)
     #x = tf.keras.layers.BatchNormalization()(x)
-    p = tf.keras.layers.Dense(256)(inputs)
+    p = tf.keras.layers.Dense(271)(inputs)
 
     h = tf.keras.Model(inputs, p)
 
@@ -320,21 +324,23 @@ class Model(object):
 
         # custom rep loss
         if Config.CUSTOM_REP_LOSS:
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 257))
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 64, 64, 3))
+            ONE_HOT_A = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 15))
             pred_h = get_predictor()
-            acts = REP_PROC[:, 255:256]
-            
-            aug_h = tf.concat([train_model.h, acts], axis=1)
-            
-            # (nbatch_train, 257)
-            pred_latents = pred_h(aug_h)
+            print(ONE_HOT_A.get_shape)
+            with tf.variable_scope("model", reuse=True) as scope:
+                first, second, _, _ = train_model.encoder(REP_PROC)
+                z2 = tf.concat([first, second], axis=1)
+                z1 = train_model.h
+                
 
-            pred_latents = tf.reshape(pred_latents, [-1, 256])
+                z1 = tf.concat([z1, ONE_HOT_A], axis=1)
+                z2 = tf.concat([z2, ONE_HOT_A], axis=1)
+            
+                p1 = pred_h(z1)
+                p2 = pred_h(z2)
 
-            # (nbatch_train, 256)
-            phi_s = REP_PROC[:, :-1]
-    
-            rep_loss = cos_loss(pred_latents,  phi_s)
+                rep_loss = cos_loss(p1,  z2)/2 + cos_loss(p2, z1)/2
 
         # cosine similarity loss
 
@@ -398,14 +404,14 @@ class Model(object):
 
         
         
-        def train(lr, cliprange, obs, phi_bars, returns, masks, actions, values, neglogpacs, states=None):
+        def train(lr, cliprange, obs, phi_bars, one_hot_actions, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
             if Config.CUSTOM_REP_LOSS:
-                td_map = {train_model.X:obs, REP_PROC:phi_bars, A:actions, ADV:advs, R:returns, LR:lr,
+                td_map = {train_model.X:obs, REP_PROC:phi_bars, ONE_HOT_A:one_hot_actions, A:actions, ADV:advs, R:returns, LR:lr,
                         CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             else:
                 td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
@@ -476,15 +482,18 @@ class Runner(AbstractEnvRunner):
         mb_states = []
         epinfos = []
         mb_phi_bars = []
+        mb_one_hot_actions = []
         # For n in range number of steps
         for _ in range(self.nsteps):
             if Config.CUSTOM_REP_LOSS:
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
-                phi_bar = get_latents_and_acts(curr_state, self.env, self.env.action_space.n, self.model)
-                # return environment to last state after sampling
+                phi_bar, one_hot_action = get_latents_and_acts(curr_state, self.env, self.env.action_space.n, self.model)
+                # track phi(s') and one-hot action with highest reward
                 mb_phi_bars.append(phi_bar)
+                mb_one_hot_actions.append(one_hot_action)
+                # return environment to last state after sampling
                 self.env.callmethod("set_state", curr_state)
             # Given observations, get action value and neglopacs
             # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
@@ -508,6 +517,7 @@ class Runner(AbstractEnvRunner):
         #batch of steps to batch of rollouts
         if Config.CUSTOM_REP_LOSS:
             mb_phi_bars = np.stack(mb_phi_bars)
+            mb_one_hot_actions = np.stack(mb_one_hot_actions)
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         #vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -532,7 +542,7 @@ class Runner(AbstractEnvRunner):
         mb_returns = mb_advs + mb_values
 
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
-            mb_phi_bars, epinfos)
+            mb_phi_bars, mb_one_hot_actions, epinfos)
 
 def sf01(arr):
     """
@@ -621,11 +631,13 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         run_tstart = time.time()
 
         packed = runner.run(update_frac=update/nupdates)
-        obs, returns, masks, actions, values, neglogpacs, phi_bars, epinfos = packed
+        obs, returns, masks, actions, values, neglogpacs, phi_bars, one_hot_actions, epinfos = packed
         # reshape our augmented state vectors to match first dim of observation array
-        # (mb_size*num_envs, latent_dim + one_action)
+        # (mb_size*num_envs, 64*64*RGB)
+        # (mb_size*num_envs, num_actions)
         if Config.CUSTOM_REP_LOSS:
-            phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, Config.NODES+1)
+            phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, 64, 64, 3)
+            one_hot_actions = one_hot_actions.reshape(Config.NUM_STEPS*Config.NUM_ENVS, -1)
         avg_value = np.mean(values)
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
@@ -648,11 +660,11 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 end = start + nbatch_train
                 mbinds = inds[start:end]
                 if Config.CUSTOM_REP_LOSS:
-                    slices = (arr[mbinds] for arr in (obs, phi_bars, returns, masks, actions, values, neglogpacs))
+                    slices = (arr[mbinds] for arr in (obs, phi_bars, one_hot_actions, returns, masks, actions, values, neglogpacs))
                 else:
                     # since we don't use phi_bars, use obs as dummy variable
                     dummy = obs
-                    slices = (arr[mbinds] for arr in (obs, dummy, returns, masks, actions, values, neglogpacs))
+                    slices = (arr[mbinds] for arr in (obs, dummy, dummy, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
