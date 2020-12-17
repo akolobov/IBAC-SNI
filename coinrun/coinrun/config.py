@@ -8,10 +8,10 @@ class ConfigSingle(object):
     keyword arguments.
     """
     def __init__(self):
-        self.WORKDIR = './results-procgen/saved_models-{}-{}-{}'.format('plunder',"pred", datetime.datetime.now().timestamp())
-        self.TB_DIR =  './results-procgen/tb_log-{}-{}-{}'.format('plunder', "pred", datetime.datetime.now().timestamp())
-        # self.WORKDIR = './results-procgen/saved_models'
-        # self.TB_DIR =  './results-procgen/tb_log'
+        # self.WORKDIR = './results-procgen/saved_models-{}-{}-{}'.format('plunder',"test", datetime.datetime.now().timestamp())
+        # self.TB_DIR =  './results-procgen/tb_log-{}-{}-{}'.format('plunder', "test", datetime.datetime.now().timestamp())
+        self.WORKDIR = './results-procgen/saved_models'
+        self.TB_DIR =  './results-procgen/tb_log'
         if not os.path.exists(self.WORKDIR):
             os.makedirs(self.WORKDIR, exist_ok=True)
 

@@ -23,6 +23,8 @@ from mpi4py import MPI
 from coinrun.tb_utils import TB_Writer
 import coinrun.main_utils as utils
 
+from coinrun.train_agent import make_env
+
 from coinrun.config import Config
 
 mpi_print = utils.mpi_print
@@ -30,6 +32,7 @@ mpi_print = utils.mpi_print
 import subprocess
 import sys
 import os
+import copy
 from baselines.common.runners import AbstractEnvRunner
 from baselines.common.tf_util import initialize
 from baselines.common.mpi_util import sync_from_root
@@ -101,7 +104,7 @@ def get_avg_rep_vec(state, env, a_n, model, weight=1, dropout=False):
     return phi_bar*weight
 
 
-def get_latents_and_acts(state, env, a_n, model):
+def get_latents_and_acts(state, env, a_n):
     """ Helper function to compute the ground truth latent vectors for successor states
     from a fixed state, as well as track the actions taken to reach those states.
     Args:
@@ -110,7 +113,6 @@ def get_latents_and_acts(state, env, a_n, model):
             class which is defined in train_agent.py
         a_n: Integer. Used to define a range [0, a_n] actions
             can take.
-        model: Custom Model object containing the current PPO model. Used to obtain the latent vectors from observations
     Returns:
         phi_sp: the latent vector concat with the actions to reach them from s for all the successor states of our input state
     """
@@ -327,7 +329,6 @@ class Model(object):
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 64, 64, 3))
             ONE_HOT_A = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 15))
             pred_h = get_predictor()
-            print(ONE_HOT_A.get_shape)
             with tf.variable_scope("model", reuse=True) as scope:
                 first, second, _, _ = train_model.encoder(REP_PROC)
                 z2 = tf.concat([first, second], axis=1)
@@ -383,7 +384,7 @@ class Model(object):
         info_loss = info_loss[0]
 
         if Config.CUSTOM_REP_LOSS:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*0.0001
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT
         else:
             loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
 
@@ -395,10 +396,18 @@ class Model(object):
         self.opt = trainer
         grads_and_var = trainer.compute_gradients(loss, params)
 
+
+        
+        
         grads, var = zip(*grads_and_var)
         if max_grad_norm is not None:
             grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         grads_and_var = list(zip(grads, var))
+
+        tot_norm = tf.zeros((1,))
+        for g,v in grads_and_var:
+            tot_norm += tf.norm(g)
+        tot_norm = tf.reshape(tot_norm, [])
 
         _train = trainer.apply_gradients(grads_and_var)
 
@@ -422,7 +431,7 @@ class Model(object):
             
             if Config.CUSTOM_REP_LOSS:
                 return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, _train],
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, tot_norm, _train],
                     td_map
                 )[:-1]
             else:
@@ -431,7 +440,7 @@ class Model(object):
                     td_map
                 )[:-1]
             
-        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss']
+        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'gradient_norm']
 
         def save(save_path):
             ps = sess.run(params)
@@ -483,18 +492,18 @@ class Runner(AbstractEnvRunner):
         epinfos = []
         mb_phi_bars = []
         mb_one_hot_actions = []
+        # create env just for rests
+        reset_env = make_env()
         # For n in range number of steps
         for _ in range(self.nsteps):
             if Config.CUSTOM_REP_LOSS:
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
-                phi_bar, one_hot_action = get_latents_and_acts(curr_state, self.env, self.env.action_space.n, self.model)
+                phi_bar, one_hot_action =  get_latents_and_acts(curr_state, reset_env, self.env.action_space.n)
                 # track phi(s') and one-hot action with highest reward
                 mb_phi_bars.append(phi_bar)
                 mb_one_hot_actions.append(one_hot_action)
-                # return environment to last state after sampling
-                self.env.callmethod("set_state", curr_state)
             # Given observations, get action value and neglopacs
             # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
             actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, self.dones)

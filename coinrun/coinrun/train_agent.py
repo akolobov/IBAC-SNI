@@ -4,9 +4,12 @@ Train an agent using a PPO2 based on OpenAI Baselines.
 import os
 import copy
 import time
+import numpy as np
 from mpi4py import MPI
 import tensorflow as tf
 from baselines.common import set_global_seeds
+from baselines.bench.monitor import ResultsWriter
+from collections import deque
 import coinrun.main_utils as utils
 from coinrun import setup_utils, policies, wrappers, ppo2
 from coinrun.config import Config
@@ -31,12 +34,64 @@ from procgen import ProcgenEnv
 
 from baselines.common.vec_env import (
     VecExtractDictObs,
-    VecMonitor,
     VecFrameStack,
-    VecNormalize
+    VecNormalize,
+    VecEnvWrapper
 )
 
+
 import sys
+
+# defined vec_monitor here for modiciations 12/17/2020
+class VecMonitor(VecEnvWrapper):
+    def __init__(self, venv, filename=None, keep_buf=0, info_keywords=()):
+        VecEnvWrapper.__init__(self, venv)
+        self.eprets = np.zeros(self.num_envs, 'f')
+        self.eplens = np.zeros(self.num_envs, 'i')
+        self.epcount = 0
+        self.tstart = time.time()
+        if filename:
+            self.results_writer = ResultsWriter(filename, header={'t_start': self.tstart},
+                extra_keys=info_keywords)
+        else:
+            self.results_writer = None
+        self.info_keywords = info_keywords
+        self.keep_buf = keep_buf
+        if self.keep_buf:
+            self.epret_buf = deque([], maxlen=keep_buf)
+            self.eplen_buf = deque([], maxlen=keep_buf)
+
+    def reset(self):
+        obs = self.venv.reset()
+        self.eprets = np.zeros(self.num_envs, 'f')
+        self.eplens = np.zeros(self.num_envs, 'i')
+        return obs
+
+    def step_wait(self):
+        obs, rews, dones, infos = self.venv.step_wait()
+        self.eprets += rews
+        self.eplens += 1
+
+        newinfos = list(infos[:])
+        for i in range(len(dones)):
+            if dones[i]:
+                info = infos[i].copy()
+                ret = self.eprets[i]
+                eplen = self.eplens[i]
+                epinfo = {'r': ret, 'l': eplen, 't': round(time.time() - self.tstart, 6)}
+                for k in self.info_keywords:
+                    epinfo[k] = info[k]
+                info['episode'] = epinfo
+                if self.keep_buf:
+                    self.epret_buf.append(ret)
+                    self.eplen_buf.append(eplen)
+                self.epcount += 1
+                self.eprets[i] = 0
+                self.eplens[i] = 0
+                if self.results_writer:
+                    self.results_writer.write_row(epinfo)
+                newinfos[i] = info
+        return obs, rews, dones, newinfos
 
 # MOD
 def _vt2space(vt: ValType):
@@ -74,8 +129,13 @@ class FakeEnv:
         # for some reason these two are returned as none
         # so I passed in a baselinevec object and copied
         # over it's values
+        self.baseline_vec = baselinevec
         self.observation_space = copy.deepcopy(baselinevec.observation_space)
         self.action_space = copy.deepcopy(baselinevec.action_space)
+        self.rewards = np.zeros(Config.NUM_ENVS)
+        self.lengths = np.zeros(Config.NUM_ENVS)
+        self.aux_rewards = None
+        self.long_aux_rewards = None
 
     def reset(self):
         _rew, ob, first = self.env.observe()
@@ -116,6 +176,20 @@ class FakeEnv:
         return self.env.callmethod(method, *args, **kwargs)
 # end mod
 
+
+# helper function to make env
+def make_env():
+    baseline_vec = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
+    gym3_env = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
+    venv = FakeEnv(gym3_env, baseline_vec)
+    venv = VecExtractDictObs(venv, "rgb")
+
+    venv = VecMonitor(venv=venv, filename=None, keep_buf=100,)
+
+    venv = VecNormalize(venv=venv, ob=False)
+    venv = wrappers.add_final_wrappers(venv)
+    return venv
+
 def main():
     args = setup_utils.setup_and_load()
 
@@ -134,8 +208,6 @@ def main():
     
     config = tf.compat.v1.ConfigProto()
     config.gpu_options.allow_growth = True # pylint: disable=E1101
-
-    nenvs = Config.NUM_ENVS
     
     total_timesteps = int(160e6)
     if Config.LONG_TRAINING:
@@ -152,8 +224,8 @@ def main():
 
     print (Config.ENVIRONMENT)
     
-    baseline_vec = ProcgenEnv(num_envs=nenvs, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
-    gym3_env = ProcgenGym3Env(num=nenvs, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
+    baseline_vec = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
+    gym3_env = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
     venv = FakeEnv(gym3_env, baseline_vec)
     venv = VecExtractDictObs(venv, "rgb")
 
@@ -162,11 +234,12 @@ def main():
     )
 
     venv = VecNormalize(venv=venv, ob=False)
-    
+    venv = wrappers.add_final_wrappers(venv)
+    print('log', type(venv))
+    #venv = make_env()
     #sys.exit(0)
     with tf.compat.v1.Session(config=config) as sess:
-        #env = wrappers.add_final_wrappers(env)
-        venv = wrappers.add_final_wrappers(venv)
+        
         
         policy = policies.get_policy()
 
