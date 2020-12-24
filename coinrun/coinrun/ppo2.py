@@ -142,6 +142,32 @@ def get_latents_and_acts(state, env, a_n):
     phi_sps = phi_sp_list[reward-1]
     return phi_sps, one_hot_actions
 
+
+def get_no_op_phi(state, env, a_no_op=4):
+    """ Helper function to compute the ground truth latent vectors for no-op
+    state
+    Args:
+        state: List containing the ground truth state for the current each observation
+        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
+            class which is defined in train_agent.py
+        a_no_op: Integer. Defines no-op action for the current state
+    Returns:
+        phi_sp: the observation vector for the no-op state
+    """
+    # sample o_i ~ T(s, a_i)
+    env.callmethod("set_state", state)
+    o_i, rewards, dones, infos = env.step(np.ones((Config.NUM_ENVS,))*a_no_op)
+
+    # create one-hot encoding array for all actions
+    a = np.array([x for x in range(15)])
+    b = np.zeros((a.size, a.max()+1))
+    b[np.arange(a.size),a] = 1
+    
+    # extract one-hot encoding for no_op action
+    one_hot_a = b[a_no_op, :]
+    one_hot_actions = np.stack(Config.NUM_ENVS*[one_hot_a])
+    return o_i, one_hot_actions
+
 class MpiAdamOptimizer(tf.compat.v1.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
     def __init__(self, comm, **kwargs):
@@ -500,7 +526,7 @@ class Runner(AbstractEnvRunner):
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
-                phi_bar, one_hot_action =  get_latents_and_acts(curr_state, reset_env, self.env.action_space.n)
+                phi_bar, one_hot_action =  get_no_op_phi(curr_state, reset_env)
                 # track phi(s') and one-hot action with highest reward
                 mb_phi_bars.append(phi_bar)
                 mb_one_hot_actions.append(one_hot_action)
