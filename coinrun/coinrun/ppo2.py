@@ -11,9 +11,6 @@ import gym3
 from PIL import Image
 import ffmpeg
 import datetime
-# from keras import backend as K
-# from keras.engine.topology import Layer
-#from tensorflow.keras.layers import Flatten
 
 
 
@@ -352,22 +349,21 @@ class Model(object):
 
         # custom rep loss
         if Config.CUSTOM_REP_LOSS:
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 64, 64, 3))
+            
             ONE_HOT_A = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 15))
             pred_h = get_predictor()
-            with tf.variable_scope("model", reuse=True) as scope:
-                first, second, _, _ = train_model.encoder(REP_PROC)
-                z2 = tf.concat([first, second], axis=1)
-                z1 = train_model.h
-                
-
-                z1 = tf.concat([z1, ONE_HOT_A], axis=1)
-                z2 = tf.concat([z2, ONE_HOT_A], axis=1)
             
-                p1 = pred_h(z1)
-                p2 = pred_h(z2)
+            z2 = train_model.no_op_gt
+            z1 = train_model.h
+            
 
-                rep_loss = cos_loss(p1,  z2)/2 + cos_loss(p2, z1)/2
+            z1 = tf.concat([z1, ONE_HOT_A], axis=1)
+            z2 = tf.concat([z2, ONE_HOT_A], axis=1)
+        
+            p1 = pred_h(z1)
+            p2 = pred_h(z2)
+
+            rep_loss = cos_loss(p1,  z2)/2 + cos_loss(p2, z1)/2
 
         # cosine similarity loss
 
@@ -446,7 +442,7 @@ class Model(object):
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
             if Config.CUSTOM_REP_LOSS:
-                td_map = {train_model.X:obs, REP_PROC:phi_bars, ONE_HOT_A:one_hot_actions, A:actions, ADV:advs, R:returns, LR:lr,
+                td_map = {train_model.X:obs, train_model.REP_PROC:phi_bars, ONE_HOT_A:one_hot_actions, A:actions, ADV:advs, R:returns, LR:lr,
                         CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             else:
                 td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
@@ -530,9 +526,11 @@ class Runner(AbstractEnvRunner):
                 # track phi(s') and one-hot action with highest reward
                 mb_phi_bars.append(phi_bar)
                 mb_one_hot_actions.append(one_hot_action)
-            # Given observations, get action value and neglopacs
-            # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, self.dones)
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, phi_bar,  update_frac, self.dones)
+            else:
+                # Given observations, get action value and neglopacs
+                # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
+                actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)

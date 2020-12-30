@@ -139,12 +139,9 @@ class CnnPolicy(object):
         if Config.REPLAY:
             X = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='Ob')
             processed_x = X
-            # create placeholders for custom loss
-            ANCHORS = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='anch')
-            POST_TRAJ = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='post_traj')
-            NEG_TRAJ = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='neg_traj')
         else:
-            X, processed_x = observation_input(ob_space, nbatch) 
+            X, processed_x = observation_input(ob_space, nbatch)
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
         with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
@@ -167,7 +164,19 @@ class CnnPolicy(object):
             #     self.pd_train.neglogp = lambda a: - self.pd_train.log_prob(a)
             #     self.vf_train = tf.reduce_mean(tf.reshape(fc(self.h, 'v', 1), shape=(Config.NR_SAMPLES, -1, 1)), 0)[:, 0]
             # else:
-            self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
+
+        # create phi(s') using the same encoder
+        with tf.variable_scope("model", reuse=True) as scope:
+            first, second, _, _ = choose_cnn(REP_PROC)
+            self.no_op_gt = tf.concat([first, second], axis=1)
+
+        
+        with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+            if Config.CUSTOM_REP_LOSS:
+                h_avg = tf.concat([self.h, self.no_op_gt], axis=1)
+                self.pd_train, _ = self.pdtype.pdfromlatent(h_avg, init_scale=0.01)
+            else:
+                self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
             self.vf_train = fc(self.h, 'v', 1)[:, 0]
 
             # if Config.CUSTOM_REP_LOSS:
@@ -235,7 +244,10 @@ class CnnPolicy(object):
         def step(ob, phi_bar, update_frac, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
-            a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
+            if Config.CUSTOM_REP_LOSS:
+                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob, REP_PROC: phi_bar})
+            else:
+                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
             return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):
@@ -254,6 +266,7 @@ class CnnPolicy(object):
         self.rep_vec = rep_vec
         self.custom_train = custom_train
         self.encoder = choose_cnn
+        self.REP_PROC = REP_PROC
 
 
 def get_policy():
