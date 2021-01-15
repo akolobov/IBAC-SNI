@@ -506,6 +506,9 @@ class Runner(AbstractEnvRunner):
         # The intuition here is that start and ending states will be very
         # different, giving us good positive/negative examples.
         self.diff_states = []
+        if Config.CUSTOM_REP_LOSS:
+             # create env just for resets
+            self.reset_env = make_env()
 
     def run(self, update_frac):
         # Here, we init the lists that will contain the mb of experiences
@@ -514,15 +517,13 @@ class Runner(AbstractEnvRunner):
         epinfos = []
         mb_phi_bars = []
         mb_one_hot_actions = []
-        # create env just for rests
-        reset_env = make_env()
         # For n in range number of steps
         for _ in range(self.nsteps):
             if Config.CUSTOM_REP_LOSS:
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
-                phi_bar, one_hot_action =  get_no_op_phi(curr_state, reset_env)
+                phi_bar, one_hot_action =  get_no_op_phi(curr_state, self.reset_env)
                 # track phi(s') and one-hot action with highest reward
                 mb_phi_bars.append(phi_bar)
                 mb_one_hot_actions.append(one_hot_action)
