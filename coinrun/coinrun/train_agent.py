@@ -235,8 +235,6 @@ def main():
 
     venv = VecNormalize(venv=venv, ob=False)
     venv = wrappers.add_final_wrappers(venv)
-    print('log', type(venv))
-    #venv = make_env()
     #sys.exit(0)
     with tf.compat.v1.Session(config=config) as sess:
         

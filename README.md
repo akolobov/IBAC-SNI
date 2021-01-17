@@ -26,7 +26,13 @@ pip install -e .
 Also, in `coinrun/coinrun/config.py` set the `self.WORKDIR` and `self.TB_DIR` variables.
 
 ## Reproducing Results Procgen
+A sample commnad is here. This repo can use mpi as shown later, but here is an example without it
+```
+python3 -m coinrun.train_agent --env starpilot --run-id baseline --num-levels 0 --short
+```
 
+
+Depracted: 
 To reproduce the results, run on a NC24 with 4 GPUs (3 will be used for training, one for testing):
 ```
 export env=<env>
