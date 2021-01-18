@@ -299,9 +299,6 @@ class Model(object):
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
-        # in case we don't use aux loss
-        aux_loss = None
-
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.compat.v1.placeholder(tf.float32, [None])
         R = tf.compat.v1.placeholder(tf.float32, [None])
@@ -350,44 +347,28 @@ class Model(object):
 
         # custom rep loss
         if Config.CUSTOM_REP_LOSS:
-            inp1 = tf.keras.layers.Input(shape=(512,))
-            output = tf.keras.layers.Dense(256, activation='relu')(inp1)
-            # number of actions is 15 for Procgen
-            output = tf.keras.layers.Dense(15)(output)
-
             # we want (s, s') pairs from our minibatch
             # which are now (phi(s), phi(s')) pairs.
             phi_s = train_model.h[:-1, :]
             phi_s_p = train_model.h[1:, :]
-            inpts = tf.concat([phi_s, phi_s_p], axis=1)
+            phi_s_merged = tf.concat([phi_s, phi_s_p], axis=1)
 
-            inv_model = tf.keras.Model(inputs=inp1, outputs=output)
+            # create inverse model 
+            with tf.compat.v1.variable_scope("inv_model", reuse=tf.compat.v1.AUTO_REUSE) as im_scope:
+                out = tf.compat.v1.layers.dense(inputs=phi_s_merged, units=256)
+                out = tf.nn.relu(out)
+                out = tf.compat.v1.layers.dense(inputs=out, units=256)
+                a_t_hat = tf.compat.v1.layers.dense(inputs=out, units=15)
 
-            act_gt = A[:-1]
-            act_pred = tf.stop_gradient(inv_model(inpts))
+            a_t_pi = train_model.samp_a[:-1]
+            a_t_pi_fixed = tf.stop_gradient(a_t_pi)
 
+            a_t_hat_fixed = tf.stop_gradient(a_t_hat)
 
-            # stop grad so we can update weights of inverse model after
-            aux_loss = tf.reduce_mean(input_tensor=tf.keras.losses.sparse_categorical_crossentropy(act_gt, act_pred, from_logits=True))
+            im_max_loss = -1 * tf.reduce_mean(input_tensor=tf.keras.losses.sparse_categorical_crossentropy(a_t_pi, a_t_hat_fixed, from_logits=True))
+
+            im_min_loss = tf.reduce_mean(input_tensor=tf.keras.losses.sparse_categorical_crossentropy(a_t_pi_fixed, a_t_hat, from_logits=True))
             
-            inv_model.compile(optimizer='adam', loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True), metrics=['accuracy'])
-            # ONE_HOT_A = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 15))
-            # pred_h = get_predictor()
-            
-            # z2 = train_model.no_op_gt
-            # z1 = train_model.h
-            
-
-            # z1 = tf.concat([z1, ONE_HOT_A], axis=1)
-            # z2 = tf.concat([z2, ONE_HOT_A], axis=1)
-        
-            # p1 = pred_h(z1)
-            # p2 = pred_h(z2)
-
-            # rep_loss = cos_loss(p1,  z2)/2 + cos_loss(p2, z1)/2
-
-        # cosine similarity loss
-
         params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
 
@@ -427,7 +408,7 @@ class Model(object):
         info_loss = info_loss[0]
 
         if Config.CUSTOM_REP_LOSS:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + aux_loss*-Config.REP_LOSS_WEIGHT
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + im_max_loss
         else:
             loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
 
@@ -454,7 +435,28 @@ class Model(object):
 
         _train = trainer.apply_gradients(grads_and_var)
 
-        
+        if Config.CUSTOM_REP_LOSS:
+            with tf.variable_scope("inv_model", reuse=tf.compat.v1.AUTO_REUSE) as scope:
+                params = tf.trainable_variables()
+                weight_params = [v for v in params if 'inv_model' in v.name]
+                # Apply custom loss
+                trainer = None
+                if Config.SYNC_FROM_ROOT:
+                    trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
+                else:
+                    trainer = tf.train.AdamOptimizer( epsilon=1e-5)
+                grads_and_var = trainer.compute_gradients(im_min_loss, params)
+                grads, var = zip(*grads_and_var)
+                if max_grad_norm is not None:
+                    grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+                grads_and_var = list(zip(grads, var))
+                _custtrain = trainer.apply_gradients(grads_and_var)
+
+                for p in weight_params:
+                    shape = p.get_shape().as_list()
+                    num_params = np.prod(shape)
+                    mpi_print('rep param', p, num_params)
+                    total_num_params += num_params
         
         def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
@@ -474,16 +476,16 @@ class Model(object):
             
             if Config.CUSTOM_REP_LOSS:
                 return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, aux_loss, tot_norm, _train],
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, im_max_loss, im_min_loss, tot_norm, _train, _custtrain],
                     td_map
-                )[:-1]
+                )[:-2]
             else:
                 return sess.run(
                     [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
                     td_map
                 )[:-1]
             
-        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'aux_loss', 'gradient_norm']
+        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'im_max_loss', 'im_min_loss', 'gradient_norm']
 
         def save(save_path):
             ps = sess.run(params)
@@ -666,6 +668,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     def save_model(base_name=None):
         base_dict = {'datapoints': datapoints}
         utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
+        utils.save_params_in_scopes(sess, ['inv_model'], Config.get_save_file(base_name=base_name), base_dict)
 
     # For logging purposes, allow restoring of update
     start_update = 0

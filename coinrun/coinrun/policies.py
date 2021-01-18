@@ -239,6 +239,9 @@ class CnnPolicy(object):
         # Used in step
         a0_run = self.pd_run.sample()
         neglogp0_run = self.pd_run.neglogp(a0_run)
+
+        # track sampled action to use for backprop on inverse model
+        self.samp_a = a0_run
         self.initial_state = None
 
         def step(ob, phi_bar, update_frac, *_args, **_kwargs):
