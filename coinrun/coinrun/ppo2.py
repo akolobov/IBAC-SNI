@@ -406,7 +406,7 @@ class Model(object):
         info_loss = info_loss[0]
 
         if Config.CUSTOM_REP_LOSS:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + im_max_loss*Config.REP_LOSS_WEIGHT
         else:
             loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
 
