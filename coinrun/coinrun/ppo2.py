@@ -299,6 +299,8 @@ class Model(object):
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
+        # in case we don't use rep loss
+        rep_loss = None
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.compat.v1.placeholder(tf.float32, [None])
         R = tf.compat.v1.placeholder(tf.float32, [None])
@@ -347,28 +349,24 @@ class Model(object):
 
         # custom rep loss
         if Config.CUSTOM_REP_LOSS:
-            # we want (s, s') pairs from our minibatch
-            # which are now (phi(s), phi(s')) pairs.
-            phi_s = train_model.h[:-1, :]
-            phi_s_p = train_model.h[1:, :]
-            phi_s_merged = tf.concat([phi_s, phi_s_p], axis=1)
-
-            # create inverse model 
-            with tf.compat.v1.variable_scope("inv_model", reuse=tf.compat.v1.AUTO_REUSE) as im_scope:
-                out = tf.compat.v1.layers.dense(inputs=phi_s_merged, units=256)
-                out = tf.nn.relu(out)
-                out = tf.compat.v1.layers.dense(inputs=out, units=256)
-                a_t_hat = tf.compat.v1.layers.dense(inputs=out, units=15)
-
-            a_t_pi = train_model.samp_a[:-1]
-            a_t_pi_fixed = tf.stop_gradient(a_t_pi)
-
-            a_t_hat_fixed = tf.stop_gradient(a_t_hat)
-
-            im_max_loss = -1 * tf.reduce_mean(input_tensor=tf.keras.losses.sparse_categorical_crossentropy(a_t_pi, a_t_hat_fixed, from_logits=True))
-
-            im_min_loss = tf.reduce_mean(input_tensor=tf.keras.losses.sparse_categorical_crossentropy(a_t_pi_fixed, a_t_hat, from_logits=True))
             
+            ONE_HOT_A = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 15))
+            pred_h = get_predictor()
+            
+            z2 = train_model.no_op_gt
+            z1 = train_model.h
+            
+
+            z1 = tf.concat([z1, ONE_HOT_A], axis=1)
+            z2 = tf.concat([z2, ONE_HOT_A], axis=1)
+        
+            p1 = pred_h(z1)
+            p2 = pred_h(z2)
+            # cosine similarity loss
+            rep_loss = cos_loss(p1,  z2)/2 + cos_loss(p2, z1)/2
+
+       
+
         params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
 
@@ -408,7 +406,7 @@ class Model(object):
         info_loss = info_loss[0]
 
         if Config.CUSTOM_REP_LOSS:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + im_max_loss
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT
         else:
             loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
 
@@ -435,57 +433,36 @@ class Model(object):
 
         _train = trainer.apply_gradients(grads_and_var)
 
-        if Config.CUSTOM_REP_LOSS:
-            with tf.variable_scope("inv_model", reuse=tf.compat.v1.AUTO_REUSE) as scope:
-                params = tf.trainable_variables()
-                weight_params = [v for v in params if 'inv_model' in v.name]
-                # Apply custom loss
-                trainer = None
-                if Config.SYNC_FROM_ROOT:
-                    trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
-                else:
-                    trainer = tf.train.AdamOptimizer( epsilon=1e-5)
-                grads_and_var = trainer.compute_gradients(im_min_loss, params)
-                grads, var = zip(*grads_and_var)
-                if max_grad_norm is not None:
-                    grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-                grads_and_var = list(zip(grads, var))
-                _custtrain = trainer.apply_gradients(grads_and_var)
-
-                for p in weight_params:
-                    shape = p.get_shape().as_list()
-                    num_params = np.prod(shape)
-                    mpi_print('rep param', p, num_params)
-                    total_num_params += num_params
         
-        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
+        
+        def train(lr, cliprange, obs, phi_bars, one_hot_actions, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
-            # if Config.CUSTOM_REP_LOSS:
-            #     td_map = {train_model.X:obs, train_model.REP_PROC:phi_bars, ONE_HOT_A:one_hot_actions, A:actions, ADV:advs, R:returns, LR:lr,
-            #             CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
-            # else:
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            if Config.CUSTOM_REP_LOSS:
+                td_map = {train_model.X:obs, train_model.REP_PROC:phi_bars, ONE_HOT_A:one_hot_actions, A:actions, ADV:advs, R:returns, LR:lr,
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            else:
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
             
             if Config.CUSTOM_REP_LOSS:
                 return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, im_max_loss, im_min_loss, tot_norm, _train, _custtrain],
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, tot_norm, _train],
                     td_map
-                )[:-2]
+                )[:-1]
             else:
                 return sess.run(
                     [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
                     td_map
                 )[:-1]
             
-        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'im_max_loss', 'im_min_loss', 'gradient_norm']
+        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'gradient_norm']
 
         def save(save_path):
             ps = sess.run(params)
@@ -506,8 +483,8 @@ class Model(object):
         self.initial_state = act_model.initial_state
         self.save = save
         self.load = load
-        #self.rep_vec = act_model.rep_vec
-        #self.custom_train = train_model.custom_train
+        self.rep_vec = act_model.rep_vec
+        self.custom_train = train_model.custom_train
 
         if Config.SYNC_FROM_ROOT:
             if MPI.COMM_WORLD.Get_rank() == 0:
@@ -529,9 +506,8 @@ class Runner(AbstractEnvRunner):
         # The intuition here is that start and ending states will be very
         # different, giving us good positive/negative examples.
         self.diff_states = []
-        # if Config.CUSTOM_REP_LOSS:
-        #      # create env just for resets
-        #     self.reset_env = make_env()
+        # create env just for rests
+        self.reset_env = make_env()
 
     def run(self, update_frac):
         # Here, we init the lists that will contain the mb of experiences
@@ -539,22 +515,23 @@ class Runner(AbstractEnvRunner):
         mb_states = []
         epinfos = []
         mb_phi_bars = []
-        mb_actions = []
+        mb_one_hot_actions = []
+       
         # For n in range number of steps
         for _ in range(self.nsteps):
-            # if Config.CUSTOM_REP_LOSS:
-            #     # # collect the ground truth state for each observation
-            #     # curr_state = self.env.callmethod("get_state")
-            #     # mb_states.append(curr_state)
-            #     # phi_bar, one_hot_action =  get_no_op_phi(curr_state, self.reset_env)
-            #     # # track phi(s') and one-hot action with highest reward
-            #     # mb_phi_bars.append(phi_bar)
-            #     # mb_one_hot_actions.append(one_hot_action)
-            #     actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac, self.dones)
-            # else:
-            # Given observations, get action value and neglopacs
-            # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-            actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac, self.dones)
+            if Config.CUSTOM_REP_LOSS:
+                # collect the ground truth state for each observation
+                curr_state = self.env.callmethod("get_state")
+                mb_states.append(curr_state)
+                phi_bar, one_hot_action =  get_no_op_phi(curr_state, self.reset_env)
+                # track phi(s') and one-hot action with highest reward
+                mb_phi_bars.append(phi_bar)
+                mb_one_hot_actions.append(one_hot_action)
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, phi_bar,  update_frac, self.dones)
+            else:
+                # Given observations, get action value and neglopacs
+                # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
+                actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -572,9 +549,9 @@ class Runner(AbstractEnvRunner):
             mb_rewards.append(rewards)
         
         #batch of steps to batch of rollouts
-        # if Config.CUSTOM_REP_LOSS:
-        #     mb_phi_bars = np.stack(mb_phi_bars)
-        #     mb_one_hot_actions = np.stack(mb_one_hot_actions)
+        if Config.CUSTOM_REP_LOSS:
+            mb_phi_bars = np.stack(mb_phi_bars)
+            mb_one_hot_actions = np.stack(mb_one_hot_actions)
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         #vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
@@ -598,7 +575,8 @@ class Runner(AbstractEnvRunner):
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         mb_returns = mb_advs + mb_values
 
-        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)), epinfos)
+        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
+            mb_phi_bars, mb_one_hot_actions, epinfos)
 
 def sf01(arr):
     """
@@ -668,7 +646,6 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     def save_model(base_name=None):
         base_dict = {'datapoints': datapoints}
         utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
-        utils.save_params_in_scopes(sess, ['inv_model'], Config.get_save_file(base_name=base_name), base_dict)
 
     # For logging purposes, allow restoring of update
     start_update = 0
@@ -688,13 +665,13 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         run_tstart = time.time()
 
         packed = runner.run(update_frac=update/nupdates)
-        obs, returns, masks, actions, values, neglogpacs, epinfos = packed
-        # # reshape our augmented state vectors to match first dim of observation array
-        # # (mb_size*num_envs, 64*64*RGB)
-        # # (mb_size*num_envs, num_actions)
-        # if Config.CUSTOM_REP_LOSS:
-        #     phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, 64, 64, 3)
-        #     one_hot_actions = one_hot_actions.reshape(Config.NUM_STEPS*Config.NUM_ENVS, -1)
+        obs, returns, masks, actions, values, neglogpacs, phi_bars, one_hot_actions, epinfos = packed
+        # reshape our augmented state vectors to match first dim of observation array
+        # (mb_size*num_envs, 64*64*RGB)
+        # (mb_size*num_envs, num_actions)
+        if Config.CUSTOM_REP_LOSS:
+            phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, 64, 64, 3)
+            one_hot_actions = one_hot_actions.reshape(Config.NUM_STEPS*Config.NUM_ENVS, -1)
         avg_value = np.mean(values)
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
@@ -716,12 +693,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 sess.run([model.train_model.train_dropout_assign_ops])
                 end = start + nbatch_train
                 mbinds = inds[start:end]
-                # if Config.CUSTOM_REP_LOSS:
-                #     slices = (arr[mbinds] for arr in (obs, phi_bars, one_hot_actions, returns, masks, actions, values, neglogpacs))
-                # else:
-                #     # since we don't use phi_bars, use obs as dummy variable
-                #     dummy = obs
-                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                if Config.CUSTOM_REP_LOSS:
+                    slices = (arr[mbinds] for arr in (obs, phi_bars, one_hot_actions, returns, masks, actions, values, neglogpacs))
+                else:
+                    # since we don't use phi_bars, use obs as dummy variable
+                    dummy = obs
+                    slices = (arr[mbinds] for arr in (obs, dummy, dummy, returns, masks, actions, values, neglogpacs))
                 mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
