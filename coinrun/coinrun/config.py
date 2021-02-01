@@ -55,7 +55,7 @@ class ConfigSingle(object):
         # Bool for using the custom representation loss, if the flag is passed then the loss will be used
         bool_keys.append(('rep_loss', 'custom_rep_loss'))
 
-        # Weighting value for the custom presentation loss
+        # Weighting value for the custom representation loss
         type_keys.append(('rep_lambda', 'rep_loss_weight', float, 1))
 
         # The number of the GPU to be used (default is zero which should be the base GPU)
@@ -63,6 +63,8 @@ class ConfigSingle(object):
 
         # Beta value for Info-loss KL divergence. -1 leaves this loss term out. 0 will probably diverge
         type_keys.append(('b', 'beta', float, -1., True))
+
+        type_keys.append(('n-heads', 'POLICY_NHEADS', int, 1, True))
 
         # Number of samples for MC averages when computing the loss 
         type_keys.append(('nr-samples', 'nr_samples', int, 1, True))

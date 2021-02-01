@@ -10,6 +10,7 @@ from coinrun.ppo2 import MpiAdamOptimizer
 #ds = tf.contrib.distributions
 from mpi4py import MPI
 from gym.spaces import Discrete, Box
+from coinrun.config import Config
 
 
 from coinrun.config import Config
@@ -142,6 +143,12 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, nbatch)
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
+            # trajectories of length m, for N policy heads.
+            self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,64,64,3])
+            # each parallel env has one anchor image
+            self.ANCH_NCE = tf.compat.v1.placeholder(tf.float32, [Config.NUM_ENVS,64,64,3])
+            # TODO confirm these are labels, Q value quantile bins
+            self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,Config.NUM_ENVS])
         with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
@@ -167,16 +174,20 @@ class CnnPolicy(object):
 
         # create phi(s') using the same encoder
         with tf.variable_scope("model", reuse=True) as scope:
-            first, second, _, _ = choose_cnn(REP_PROC)
-            self.no_op_gt = tf.concat([first, second], axis=1)
+            first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
+            # ( m * K * N, hidden_dim)
+            self.phi_traj_nce = tf.concat([first, second], axis=1)
+
+            first, second, _, _ = choose_cnn(self.ANCH_NCE)
+            self.phi_anch_nce = tf.concat([first, second], axis=1)
 
         
         with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-            if Config.CUSTOM_REP_LOSS:
-                h_avg = tf.concat([self.h, self.no_op_gt], axis=1)
-                self.pd_train, _ = self.pdtype.pdfromlatent(h_avg, init_scale=0.01)
+            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
+                self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0] for _ in range(Config.POLICY_NHEADS)]
             else:
-                self.pd_train, _ = self.pdtype.pdfromlatent(self.h, init_scale=0.01)
+                self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
+            
             self.vf_train = fc(self.h, 'v', 1)[:, 0]
 
             # if Config.CUSTOM_REP_LOSS:
@@ -236,18 +247,19 @@ class CnnPolicy(object):
             # For Dropout: Always change layer, so slow layer is never used
             self.run_dropout_assign_ops = []
 
-        # Used in step
-        a0_run = self.pd_run.sample()
-        neglogp0_run = self.pd_run.neglogp(a0_run)
+        # Use the first head for classical PPO updates
+        a0_run = [self.pd_run[head_idx].sample() for head_idx in range(Config.POLICY_NHEADS)]
+        neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
         self.initial_state = None
 
-        def step(ob, phi_bar, update_frac, *_args, **_kwargs):
+        def step(ob, update_frac, head_idx, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
+                # two options are the same, should condense.
             if Config.CUSTOM_REP_LOSS:
-                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob, REP_PROC: phi_bar})
+                a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
             else:
-                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
+                a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
             return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):

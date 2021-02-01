@@ -21,7 +21,6 @@ from coinrun.tb_utils import TB_Writer
 import coinrun.main_utils as utils
 
 from coinrun.train_agent import make_env
-
 from coinrun.config import Config
 
 mpi_print = utils.mpi_print
@@ -227,67 +226,38 @@ def aug_w_acts(latents, nbatch):
 #def aug_w_acts(latents, nbatch):
 
 
-# bilinear prediction layer 
-def get_predictor():
-    inputs = tf.keras.layers.Input((271, ))
+# prediction layer 
+def get_seq_encoder():
+    inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,Config.REP_LOSS_M,256 ))
+    conv1x1 = tf.keras.layers.Conv2D(filters=256,kernel_size=(1,1),activation='relu')(inputs)
+    out = tf.keras.layers.Dense(512,activation='relu')(tf.reshape(conv1x1,(Config.NUM_ENVS*Config.POLICY_NHEADS,Config.REP_LOSS_M*256)))
+    # output should be (ne, N, x)
+    p = tf.reshape(out,(Config.NUM_ENVS, Config.POLICY_NHEADS,-1))
     #x = tf.keras.layers.Dense(512, activation='relu', use_bias=False)(inputs)
     #x = tf.keras.layers.BatchNormalization()(x)
-    p = tf.keras.layers.Dense(271)(inputs)
-
+    # p = tf.keras.layers.Dense(271)(inputs)
     h = tf.keras.Model(inputs, p)
-
     return h
 
-# class BilinearModel(Layer):
-#     """
-#     Weighted bilinear model of two inputs. Useful for learning a model of linear interactions between
-#     separate feature types (e.g., texture X spatial) or scales (e.g., dense X dilated), etc.
-#     # taken from: https://github.com/rgmyr/keras-texture/blob/master/texture/layers/bilinearmodel.py?fbclid=IwAR1LtTYPjgKj-dI2Z8BvIzvP7VLZ30HAcOW-tuZILVjGunbhD8LhmJtzfI8
-#     """
+def get_anch_encoder():
+    inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,256 ))
+    p = tf.keras.layers.Dense(512,activation='relu')(inputs)
+    h = tf.keras.Model(inputs, p)
+    return h
 
-#     def __init__(self, l2_normalize=True, **kwargs):
-#         self.l2_normalize = l2_normalize
-#         super(BilinearModel, self).__init__(**kwargs)
+# why 20. and not just 20? same for the 1. below
+def tanh_clip(x, clip_val=20.):
+    '''
+    soft clip values to the range [-clip_val, +clip_val]
+    Trick from AM-DIM
+    '''
+    if clip_val is not None:
+        # why not just clip_val * tanh(x), since tanh : R -> [-1, 1]
+        x_clip = clip_val * tf.math.tanh((1. / clip_val) * x)
+    else:
+        x_clip = x
+    return x_clip
 
-#     def build(self, input_shape):
-#         self._shapecheck(input_shape)
-
-#         self.shapeA, self.shapeB = input_shape[0][1], input_shape[1][1]
-
-#         self.weights = self.add_weight(name='outer_prod_weights',
-#                                        shape=(self.shapeA, self.shapeB),
-#                                        initializer='glorot_normal',
-#                                        trainable=True)
-#     def call(self, x):
-#         self._shapecheck(x)
-
-#         weighted_outer = tf.multiply(self.weights, tf.einsum('bi,bj->bij', x[0], x[1]))
-
-#         flat_output = K.Flatten(weighted_outer)
-
-#         if self.l2_normalize:
-#             flat_output = tf.nn.l2_normalize(flat_output, axis=-1)
-
-#         return flat_output
-
-    def compute_output_shape(self, input_shape):
-        return (input_shape[0][0], self.shapeA, self.shapeB)
-
-    def _shapecheck(self,x):
-        # both x and input_shape should be a list of len=2
-        if not isinstance(x, list) or len(x) != 2:
-            raise ValueError('A `BilinearModel` layer should be called on a list of exactly two inputs')
-
-        # if input_shape, check dimensionality
-        if isinstance(x[0], tuple):
-            assert len(x[0]) == 2 and len(x[1]) == 2, '`BilinearModel` input tensors must be 2-D'
-
-        # if x, they should match shapes from build()
-        elif K.is_keras_tensor(x[0]):
-            assert K.ndim(x[0]) == 2 and K.ndim(x[1]) == 2, '`BilinearModel` input tensors must be 2-D'
-            shapeA, shapeB = K.int_shape(x[0])[1], K.int_shape(x[1])[1]
-            if shapeA != self.shapeA or shapeB != self.shapeB:
-                raise ValueError('Unexpected `BilinearModel` input_shape')
 
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
@@ -315,7 +285,7 @@ class Model(object):
         vf_losses2 = tf.square(vpredclipped - R)
         vf_loss = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1, vf_losses2))
 
-        neglogpac_train = train_model.pd_train.neglogp(A)
+        neglogpac_train = train_model.pd_train[0].neglogp(A)
         ratio_train = tf.exp(OLDNEGLOGPAC - neglogpac_train)
         pg_losses_train = -ADV * ratio_train
         pg_losses2_train = -ADV * tf.clip_by_value(ratio_train, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
@@ -324,9 +294,9 @@ class Model(object):
         clipfrac_train = tf.reduce_mean(input_tensor=tf.cast(tf.greater(tf.abs(ratio_train - 1.0), CLIPRANGE), dtype=tf.float32))
 
         if Config.BETA >= 0:
-            entropy = tf.reduce_mean(input_tensor=train_model.pd_train._components_distribution.entropy())
+            entropy = tf.reduce_mean(input_tensor=train_model.pd_train[0]._components_distribution.entropy())
         else:
-            entropy = tf.reduce_mean(input_tensor=train_model.pd_train.entropy())
+            entropy = tf.reduce_mean(input_tensor=train_model.pd_train[0].entropy())
 
         # Add entropy and policy loss for the samples as well
         if Config.SNI or Config.SNI2:
@@ -349,21 +319,30 @@ class Model(object):
 
         # custom rep loss
         if Config.CUSTOM_REP_LOSS:
+             # (m, n, 32, x)
+            phi_traj_nce = tf.transpose(tf.reshape(train_model.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,-1)),perm=[2,1,0,3])
             
-            ONE_HOT_A = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch_train, 15))
-            pred_h = get_predictor()
+            pred_traj = get_seq_encoder()
+            pred_anch = get_anch_encoder()
             
-            z2 = train_model.no_op_gt
-            z1 = train_model.h
-            
+            embed_seq = pred_traj(phi_traj_nce)
+            embed_anch = pred_anch(train_model.phi_anch_nce)
 
-            z1 = tf.concat([z1, ONE_HOT_A], axis=1)
-            z2 = tf.concat([z2, ONE_HOT_A], axis=1)
-        
-            p1 = pred_h(z1)
-            p2 = pred_h(z2)
-            # cosine similarity loss
-            rep_loss = cos_loss(p1,  z2)/2 + cos_loss(p2, z1)/2
+            # n_loc x n_batch x n_batch
+            outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",embed_seq,embed_anch) ) / (512)**0.5
+
+            rep_loss = 0.
+            for i in range(Config.POLICY_NHEADS):
+                mask = tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE)
+                pos = tf.boolean_mask(outer_prod,mask)
+                neg = tf.boolean_mask(outer_prod,tf.math.logical_not(mask))
+                scores = tf.concat([pos, neg], axis=0)
+
+                scores = tf.nn.log_softmax(scores,0)
+                
+                rep_loss = rep_loss + tf.reduce_mean(scores)
+            
+            rep_loss = -1/Config.POLICY_NHEADS * rep_loss 
 
        
 
@@ -435,15 +414,15 @@ class Model(object):
 
         
         
-        def train(lr, cliprange, obs, phi_bars, one_hot_actions, returns, masks, actions, values, neglogpacs, states=None):
+        def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, masks, actions, values, neglogpacs, states=None):
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
             if Config.CUSTOM_REP_LOSS:
-                td_map = {train_model.X:obs, train_model.REP_PROC:phi_bars, ONE_HOT_A:one_hot_actions, A:actions, ADV:advs, R:returns, LR:lr,
-                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE_NCE:states_nce, train_model.ANCH_NCE:anchors_nce, train_model.LAB_NCE:labels_nce}
             else:
                 td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
                         CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
@@ -509,13 +488,55 @@ class Runner(AbstractEnvRunner):
         # create env just for rests
         self.reset_env = make_env()
 
+    def get_NCE_samples(self, s_0, env,obs,done):
+        states_nce = []
+        rewards_nce = []
+        dones_nce = []
+        infos_nce = []
+
+        # fix an initial state, and roll out one step, append to nce 
+        for k in range(Config.POLICY_NHEADS):
+            env.callmethod("set_state", s_0)
+            state_nce = []
+            reward_nce = []
+            done_nce = []
+            info_nce = []
+            for m in range(Config.REP_LOSS_M):
+                actions, values, _, _ = self.model.step(obs, 1, k, done)
+                obs, reward, done, info = env.step(actions)
+                state_nce.append(obs)
+                if m == Config.REP_LOSS_M-1: # direct model for remaining of trajectory
+                    reward = reward + values
+                reward_nce.append(reward)
+                done_nce.append(done)
+                info_nce.append([[float(v) for k,v in info_.items() if k != 'episode'] for info_ in info])
+            states_nce.append(state_nce)
+            rewards_nce.append(reward_nce)
+            dones_nce.append(done_nce)
+            infos_nce.append(info_nce)
+
+        states_nce = np.transpose(np.array(states_nce),(1,0,2,3,4,5))
+        rewards_nce = np.transpose(np.array(rewards_nce),(1,0,2))
+        dones_nce = np.transpose(np.array(dones_nce),(1,0,2))
+        infos_nce = np.transpose(np.array(infos_nce),(1,0,2,3))
+
+        sum_rew = rewards_nce.sum(0)
+        quantiles = np.quantile(sum_rew,np.linspace(0,1,Config.POLICY_NHEADS+1))[1:]
+
+        if quantiles[0] == quantiles[-1]: # only 1 reward value -> train on own trajectory
+            labels = np.repeat(np.arange(0,Config.POLICY_NHEADS).reshape(-1,1),Config.NUM_ENVS,1)
+        else:
+            labels = np.digitize(sum_rew, bins=quantiles)
+        
+        return states_nce, rewards_nce, dones_nce, infos_nce, labels
+
     def run(self, update_frac):
         # Here, we init the lists that will contain the mb of experiences
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
+        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[]
         mb_states = []
         epinfos = []
-        mb_phi_bars = []
-        mb_one_hot_actions = []
+
+        head_idx_current_batch = np.random.randint(0,Config.POLICY_NHEADS,1).item()
        
         # For n in range number of steps
         for _ in range(self.nsteps):
@@ -523,15 +544,16 @@ class Runner(AbstractEnvRunner):
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
-                phi_bar, one_hot_action =  get_no_op_phi(curr_state, self.reset_env)
+                # phi_bar, one_hot_action =  get_no_op_phi(curr_state, self.reset_env)
                 # track phi(s') and one-hot action with highest reward
-                mb_phi_bars.append(phi_bar)
-                mb_one_hot_actions.append(one_hot_action)
-                actions, values, self.states, neglogpacs = self.model.step(self.obs, phi_bar,  update_frac, self.dones)
+                # mb_phi_bars.append(phi_bar)
+                # mb_one_hot_actions.append(one_hot_action)
+                # TODO (Ahmed) can condense. Will we always use the first head for TD loss?
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, head_idx_current_batch, self.dones)
             else:
                 # Given observations, get action value and neglopacs
                 # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-                actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac, self.dones)
+                actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac,0, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -540,24 +562,35 @@ class Runner(AbstractEnvRunner):
 
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
             
+            self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
             
-            for info in infos:
+            for info in self.infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
+                
+            mb_infos.append([[float(v) for k,v in info_.items() if k != 'episode'] for info_ in self.infos])
             mb_rewards.append(rewards)
-        
-        #batch of steps to batch of rollouts
+
         if Config.CUSTOM_REP_LOSS:
-            mb_phi_bars = np.stack(mb_phi_bars)
-            mb_one_hot_actions = np.stack(mb_one_hot_actions)
+            s_0 = self.env.callmethod("get_state")
+            
+            states_nce, rewards_nce, dones_nce, infos_nce, labels_nce = self.get_NCE_samples(s_0, self.reset_env, self.obs.copy(), self.dones)
+            anchors_nce = self.obs.copy()
+        else:
+            states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
+
+        #batch of steps to batch of rollouts
+        # if Config.CUSTOM_REP_LOSS:
+        #     mb_phi_bars = np.stack(mb_phi_bars)
+        #     mb_one_hot_actions = np.stack(mb_one_hot_actions)
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         #vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
+        mb_infos = np.asarray(mb_infos, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, update_frac, self.states, self.dones)
         # discount/bootstrap off value fn
@@ -575,8 +608,8 @@ class Runner(AbstractEnvRunner):
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         mb_returns = mb_advs + mb_values
 
-        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
-            mb_phi_bars, mb_one_hot_actions, epinfos)
+        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_infos)),
+            states_nce, anchors_nce, labels_nce, epinfos)
 
 def sf01(arr):
     """
@@ -665,13 +698,11 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         run_tstart = time.time()
 
         packed = runner.run(update_frac=update/nupdates)
-        obs, returns, masks, actions, values, neglogpacs, phi_bars, one_hot_actions, epinfos = packed
+        obs, returns, masks, actions, values, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos = packed
+        
         # reshape our augmented state vectors to match first dim of observation array
         # (mb_size*num_envs, 64*64*RGB)
         # (mb_size*num_envs, num_actions)
-        if Config.CUSTOM_REP_LOSS:
-            phi_bars = phi_bars.reshape(Config.NUM_STEPS*Config.NUM_ENVS, 64, 64, 3)
-            one_hot_actions = one_hot_actions.reshape(Config.NUM_STEPS*Config.NUM_ENVS, -1)
         avg_value = np.mean(values)
         epinfobuf10.extend(epinfos)
         epinfobuf100.extend(epinfos)
@@ -694,12 +725,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 end = start + nbatch_train
                 mbinds = inds[start:end]
                 if Config.CUSTOM_REP_LOSS:
-                    slices = (arr[mbinds] for arr in (obs, phi_bars, one_hot_actions, returns, masks, actions, values, neglogpacs))
+                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
                 else:
                     # since we don't use phi_bars, use obs as dummy variable
                     dummy = obs
-                    slices = (arr[mbinds] for arr in (obs, dummy, dummy, returns, masks, actions, values, neglogpacs))
-                mblossvals.append(model.train(lrnow, cliprangenow, *slices))
+                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices))
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
         sess.run([model.train_model.run_dropout_assign_ops])
