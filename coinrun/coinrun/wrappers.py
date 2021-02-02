@@ -1,6 +1,7 @@
 import gym
 import numpy as np
 from itertools import product
+from coinrun.config import Config
 
 
 class EpsilonGreedyWrapper(gym.Wrapper):
@@ -127,7 +128,7 @@ class DistributionShiftWrapperVec(gym.Wrapper):
 
     def step(self, action):
         next_state, reward, is_done, info =  self.envs[self.current_env_idx].step(action)
-        self.current_env_steps_left = max(0, self.current_env_steps_left - 1)
+        self.current_env_steps_left = max(0, self.current_env_steps_left - Config.NUM_ENVS)
         if self.current_env_steps_left == 0:
             if not self.switch_at_next_reset:
                 for i in range(len(info)):

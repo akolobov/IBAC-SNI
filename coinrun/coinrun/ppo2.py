@@ -245,6 +245,14 @@ def get_anch_encoder():
     h = tf.keras.Model(inputs, p)
     return h
 
+def get_predictor():
+    inputs = tf.keras.layers.Input((512, ))
+    p = tf.keras.layers.Dense(512)(inputs)
+
+    h = tf.keras.Model(inputs, p)
+
+    return h
+
 # why 20. and not just 20? same for the 1. below
 def tanh_clip(x, clip_val=20.):
     '''
@@ -322,27 +330,30 @@ class Model(object):
              # (m, n, 32, x)
             phi_traj_nce = tf.transpose(tf.reshape(train_model.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,-1)),perm=[2,1,0,3])
             
-            pred_traj = get_seq_encoder()
-            pred_anch = get_anch_encoder()
-            
-            embed_seq = pred_traj(phi_traj_nce)
-            embed_anch = pred_anch(train_model.phi_anch_nce)
+            # z_seq: n_envs x n_heads x 512
+            z_seq = get_seq_encoder()(phi_traj_nce)
+            # z_anch: n_envs x 512
+            z_anch = get_anch_encoder()(train_model.phi_anch_nce)
+            # z_anch: n_envs x n_heads x 512
+            z_anch = tf.tile(tf.reshape(z_anch,(Config.NUM_ENVS,1,-1)),tf.constant([1,Config.POLICY_NHEADS,1],tf.int32))
 
             # n_loc x n_batch x n_batch
-            outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",embed_seq,embed_anch) ) / (512)**0.5
+            # outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (512)**0.5
 
             rep_loss = 0.
             for i in range(Config.POLICY_NHEADS):
-                mask = tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE)
-                pos = tf.boolean_mask(outer_prod,mask)
-                neg = tf.boolean_mask(outer_prod,tf.math.logical_not(mask))
-                scores = tf.concat([pos, neg], axis=0)
+                # mask: n_envs x n_heads
+                mask = tf.transpose(tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE))
+                # p_seq and p_anch: n_pos_traj x 512
+                p_seq = get_predictor()(tf.boolean_mask(z_seq,mask))
+                p_anch = get_predictor()(tf.boolean_mask(z_anch,mask))
 
-                scores = tf.nn.log_softmax(scores,0)
+                z_seq_mask = tf.boolean_mask(z_seq,mask)
+                z_anch_mask = tf.boolean_mask(z_anch,mask)
                 
-                rep_loss = rep_loss + tf.reduce_mean(scores)
+                rep_loss = rep_loss + ( cos_loss(p_seq,  z_anch_mask) + cos_loss(p_anch, z_seq_mask) ) / 2. # already has - sign in cos_loss
             
-            rep_loss = -1/Config.POLICY_NHEADS * rep_loss 
+            rep_loss = 1/Config.POLICY_NHEADS * rep_loss 
 
        
 
@@ -380,7 +391,7 @@ class Model(object):
             info_loss = [tf.constant(0.)]
             beta = 0
 
-        print(info_loss)
+        # print(info_loss)
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
@@ -485,8 +496,17 @@ class Runner(AbstractEnvRunner):
         # The intuition here is that start and ending states will be very
         # different, giving us good positive/negative examples.
         self.diff_states = []
-        # create env just for rests
-        self.reset_env = make_env()
+        # create env just for resets
+        # TODO: Set a Config variable that takes this in as arg
+        total_timesteps = int(160e6)
+        if Config.LONG_TRAINING:
+            total_timesteps = int(200e6)
+        elif Config.SHORT_TRAINING:
+            #total_timesteps = int(120e6)
+            total_timesteps = int(25e6)
+        elif Config.VERY_SHORT_TRAINING:
+            total_timesteps = int(5e6)
+        self.reset_env = make_env(steps_per_env=total_timesteps//2)
 
     def get_NCE_samples(self, s_0, env,obs,done):
         states_nce = []
@@ -494,7 +514,7 @@ class Runner(AbstractEnvRunner):
         dones_nce = []
         infos_nce = []
 
-        # fix an initial state, and roll out one step, append to nce 
+        # for each policy head, collect m step rollouts
         for k in range(Config.POLICY_NHEADS):
             env.callmethod("set_state", s_0)
             state_nce = []
@@ -544,11 +564,6 @@ class Runner(AbstractEnvRunner):
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
-                # phi_bar, one_hot_action =  get_no_op_phi(curr_state, self.reset_env)
-                # track phi(s') and one-hot action with highest reward
-                # mb_phi_bars.append(phi_bar)
-                # mb_one_hot_actions.append(one_hot_action)
-                # TODO (Ahmed) can condense. Will we always use the first head for TD loss?
                 actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, head_idx_current_batch, self.dones)
             else:
                 # Given observations, get action value and neglopacs
@@ -575,6 +590,8 @@ class Runner(AbstractEnvRunner):
         if Config.CUSTOM_REP_LOSS:
             s_0 = self.env.callmethod("get_state")
             
+            # ensure reset env has same step counter as main env
+            self.reset_env.current_env_steps_left = self.env.current_env_steps_left
             states_nce, rewards_nce, dones_nce, infos_nce, labels_nce = self.get_NCE_samples(s_0, self.reset_env, self.obs.copy(), self.dones)
             anchors_nce = self.obs.copy()
         else:

@@ -145,9 +145,8 @@ class CnnPolicy(object):
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
             # trajectories of length m, for N policy heads.
             self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,64,64,3])
-            # each parallel env has one anchor image
             self.ANCH_NCE = tf.compat.v1.placeholder(tf.float32, [Config.NUM_ENVS,64,64,3])
-            # TODO confirm these are labels, Q value quantile bins
+            # labels of Q value quantile bins
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,Config.NUM_ENVS])
         with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
@@ -247,7 +246,7 @@ class CnnPolicy(object):
             # For Dropout: Always change layer, so slow layer is never used
             self.run_dropout_assign_ops = []
 
-        # Use the first head for classical PPO updates
+        # Use the current head for classical PPO updates
         a0_run = [self.pd_run[head_idx].sample() for head_idx in range(Config.POLICY_NHEADS)]
         neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
         self.initial_state = None
@@ -255,11 +254,7 @@ class CnnPolicy(object):
         def step(ob, update_frac, head_idx, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
-                # two options are the same, should condense.
-            if Config.CUSTOM_REP_LOSS:
-                a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
-            else:
-                a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
+            a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
             return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):

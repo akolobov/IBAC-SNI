@@ -34,8 +34,6 @@ from gym3.types import (
     INTEGER_DTYPE_NAMES,
     FLOAT_DTYPE_NAMES,
 )
-#from baselines.ppo2 import ppo2
-#from baselines.common.models import build_impala_cnn
 from baselines.common.mpi_util import setup_mpi_gpus
 from gym.spaces import Box, Dict
 from procgen import ProcgenGym3Env
@@ -249,6 +247,7 @@ def main():
 
     print (Config.ENVIRONMENT)
     
+    # total_timesteps = 32768
     venv = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
 
     # venv.reset()
