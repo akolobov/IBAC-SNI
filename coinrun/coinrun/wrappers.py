@@ -1,5 +1,8 @@
 import gym
 import numpy as np
+from itertools import product
+from coinrun.config import Config
+
 
 class EpsilonGreedyWrapper(gym.Wrapper):
     """
@@ -94,6 +97,50 @@ class EpisodeRewardWrapper(gym.Wrapper):
 
         self.reset = reset
         self.step = step
+
+class DistributionShiftWrapperVec(gym.Wrapper):
+    def __init__(self, env_list, steps_per_env):
+        """
+        Takes 2 parameters:
+        episodes_per_env: int, number of steps for each env before switching
+        kwargs: dict of lists
+        """
+        self.envs = env_list
+        self.steps_per_env = steps_per_env
+
+        self.current_env_idx = 0
+        self.current_env_steps_left = self.steps_per_env
+
+        self.env = self.envs[0]
+        try:
+            self.observation_space = self.env.observation_space
+            self.action_space = self.env.action_space
+        except:
+            pass
+        self.switch_at_next_reset = False
+
+    def reset(self):
+        if self.switch_at_next_reset:
+            self.current_env_steps_left = self.steps_per_env
+            self.current_env_idx = ( self.current_env_idx + 1 ) % len(self.envs)
+            self.switch_at_next_reset = False
+        return self.envs[self.current_env_idx].reset()
+
+    def step(self, action):
+        next_state, reward, is_done, info =  self.envs[self.current_env_idx].step(action)
+        self.current_env_steps_left = max(0, self.current_env_steps_left - Config.NUM_ENVS)
+        if self.current_env_steps_left == 0:
+            if not self.switch_at_next_reset:
+                for i in range(len(info)):
+                    info[i]['switched_envs'] = 1
+                self.switch_at_next_reset = True
+                return next_state, reward, is_done, info
+
+        for i in range(len(info)):
+            info[i]['switched_envs'] = 0
+        
+        return next_state, reward, is_done, info
+
 
 def add_final_wrappers(env):
     env = EpisodeRewardWrapper(env)

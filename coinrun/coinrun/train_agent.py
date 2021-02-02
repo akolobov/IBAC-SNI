@@ -1,5 +1,14 @@
 """
 Train an agent using a PPO2 based on OpenAI Baselines.
+
+To run:
+
+conda activate aidl
+cd jobs/IBAC-SNI/coinrun
+python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss -n-heads 5 -m 10
+
+To plot (local):
+tensorboard --logdir=results-procgen/tb_log/baseline_0/ --host localhost --port 8888
 """
 import os
 import copy
@@ -25,8 +34,6 @@ from gym3.types import (
     INTEGER_DTYPE_NAMES,
     FLOAT_DTYPE_NAMES,
 )
-#from baselines.ppo2 import ppo2
-#from baselines.common.models import build_impala_cnn
 from baselines.common.mpi_util import setup_mpi_gpus
 from gym.spaces import Box, Dict
 from procgen import ProcgenGym3Env
@@ -178,16 +185,32 @@ class FakeEnv:
 
 
 # helper function to make env
-def make_env():
-    baseline_vec = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
-    gym3_env = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
-    venv = FakeEnv(gym3_env, baseline_vec)
-    venv = VecExtractDictObs(venv, "rgb")
+def make_env(steps_per_env=int(25e6//2)):
+    baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
+    gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
 
-    venv = VecMonitor(venv=venv, filename=None, keep_buf=100,)
+    baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="exploration")
+    gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="exploration")
+    
+    venv_train = FakeEnv(gym3_env_train, baseline_vec_train)
+    venv_train = VecExtractDictObs(venv_train, "rgb")
+    venv_adapt = FakeEnv(gym3_env_adapt, baseline_vec_adapt)   
+    venv_adapt = VecExtractDictObs(venv_adapt, "rgb") 
 
-    venv = VecNormalize(venv=venv, ob=False)
-    venv = wrappers.add_final_wrappers(venv)
+    venv_train = VecMonitor(
+        venv=venv_train, filename=None, keep_buf=100,
+    )
+    venv_adapt = VecMonitor(
+        venv=venv_adapt, filename=None, keep_buf=100,
+    )
+
+    venv_train = VecNormalize(venv=venv_train, ob=False)
+    venv_train = wrappers.add_final_wrappers(venv_train)
+    venv_adapt = VecNormalize(venv=venv_adapt, ob=False)
+    venv_adapt = wrappers.add_final_wrappers(venv_adapt)
+
+    venv = wrappers.DistributionShiftWrapperVec(env_list=[venv_train,venv_adapt],steps_per_env=steps_per_env) 
+
     return venv
 
 def main():
@@ -224,18 +247,16 @@ def main():
 
     print (Config.ENVIRONMENT)
     
-    baseline_vec = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
-    gym3_env = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
-    venv = FakeEnv(gym3_env, baseline_vec)
-    venv = VecExtractDictObs(venv, "rgb")
+    # total_timesteps = 32768
+    venv = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
 
-    venv = VecMonitor(
-        venv=venv, filename=None, keep_buf=100,
-    )
-
-    venv = VecNormalize(venv=venv, ob=False)
-    venv = wrappers.add_final_wrappers(venv)
-    #sys.exit(0)
+    # venv.reset()
+    # for i in range(18):
+    #     _,_,dones,info =venv.step(np.array([0 for _ in range(32)]))
+    #     print([d['switched_envs'] for d in info])
+    #     print(dones)
+    #     print(venv.switch_at_next_reset)
+    # exit()
     with tf.compat.v1.Session(config=config) as sess:
         
         
