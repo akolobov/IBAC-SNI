@@ -185,7 +185,7 @@ class FakeEnv:
 
 
 # helper function to make env
-def make_env(steps_per_env=int(25e6//2)):
+def make_env(steps_per_env):
     baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
     gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="easy")
 
@@ -209,7 +209,7 @@ def make_env(steps_per_env=int(25e6//2)):
     venv_adapt = VecNormalize(venv=venv_adapt, ob=False)
     venv_adapt = wrappers.add_final_wrappers(venv_adapt)
 
-    venv = wrappers.DistributionShiftWrapperVec(env_list=[venv_train,venv_adapt],steps_per_env=steps_per_env) 
+    venv = wrappers.DistributionShiftWrapperVec(env_list=[venv_train, venv_adapt], steps_per_env=steps_per_env) 
 
     return venv
 
@@ -247,16 +247,9 @@ def main():
 
     print (Config.ENVIRONMENT)
     
-    # total_timesteps = 32768
     venv = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
 
-    # venv.reset()
-    # for i in range(18):
-    #     _,_,dones,info =venv.step(np.array([0 for _ in range(32)]))
-    #     print([d['switched_envs'] for d in info])
-    #     print(dones)
-    #     print(venv.switch_at_next_reset)
-    # exit()
+    
     with tf.compat.v1.Session(config=config) as sess:
         
         

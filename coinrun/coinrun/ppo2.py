@@ -57,113 +57,6 @@ def vidwrite(filename, images, framerate=60, vcodec='libx264'):
     process.stdin.close()
     process.wait()
 
-
-def get_avg_rep_vec(state, env, a_n, model, weight=1, dropout=False):
-    """ Implementation of the 'averaging representation function', which finds the average latent vector
-    of the successor states for a given state, giving an action invariant representation
-    Args:
-        states: List containing the ground truth state for each observation in the current minibatch
-        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
-            class which is defined in train_agent.py
-        a_n: Integer. Used to define a range [0, a_n] actions
-            can take.
-        model: Custom Model object containing the current PPO model. Used to obtain the latent vectors from observations
-        weight: float from 0 to 1 determining how much we weight the phi_bar vector before returning
-        dropout: Boolean indicating whether we want to "dropout" our latent augmentation and replace it with a random standard normal
-        vector instead. Useful for avoiding overfitting to the initial state distribution. 
-    Returns:
-        phi_bar: the average of the latent vectors for all the successor states of our input state
-    """
-    if dropout:
-        # sample bernoulli 
-        bernoulli = np.random.binomial(1, 0.5)
-        if bernoulli == 1:
-            phi_bar = np.zeros((Config.NUM_ENVS, Config.NUM_STEPS))
-            for a in range(a_n):
-                # sample o_i ~ T(s, a_i)
-                env.callmethod("set_state", state)
-                o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*a)
-                phi_i = model.rep_vec(o_i)
-                phi_bar += phi_i/a_n
-        else:
-            phi_bar = np.random.normal(size=(Config.NUM_ENVS, Config.NUM_STEPS))
-    else:
-        env.callmethod("set_state", state)
-        o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*4)
-        phi_bar = model.rep_vec(o_i)
-        # for _ in range(a_n):
-        #     # sample o_i ~ T(s, a_i)
-        #     env.callmethod("set_state", state)
-        #     o_i, _, _, _ = env.step(np.ones((Config.NUM_ENVS,))*4)
-        #     phi_i = model.rep_vec(o_i)
-        #     phi_bar += phi_i/a_n
-    return phi_bar*weight
-
-
-def get_latents_and_acts(state, env, a_n):
-    """ Helper function to compute the ground truth latent vectors for successor states
-    from a fixed state, as well as track the actions taken to reach those states.
-    Args:
-        state: List containing the ground truth state for the current each observation
-        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
-            class which is defined in train_agent.py
-        a_n: Integer. Used to define a range [0, a_n] actions
-            can take.
-    Returns:
-        phi_sp: the latent vector concat with the actions to reach them from s for all the successor states of our input state
-    """
-    phi_sp_list = []
-    rewards_per_env = np.empty(shape=(1,))
-    for a in range(a_n):
-            # sample o_i ~ T(s, a_i)
-            env.callmethod("set_state", state)
-            o_i, rewards, dones, infos = env.step(np.ones((Config.NUM_ENVS,))*a)
-            curr_reward = np.average(rewards)
-            rewards_per_env = np.append(arr=rewards_per_env, values=curr_reward,)
-            # (Num_envs, Latent_Dim)
-            phi_sp_list.append(o_i)
-
-    # create one-hot encoding array for all actions
-    a = np.array([x for x in range(15)])
-    b = np.zeros((a.size, a.max()+1))
-    b[np.arange(a.size),a] = 1
-    reward = np.argmax(rewards_per_env)
-
-    # extract one-hot encoding for highest reward action
-    one_hot_a = b[reward-1, :]
-
-    one_hot_actions = np.stack(Config.NUM_ENVS*[one_hot_a])
-
-    # (num_envs, latent_dim)
-    phi_sps = phi_sp_list[reward-1]
-    return phi_sps, one_hot_actions
-
-
-def get_no_op_phi(state, env, a_no_op=4):
-    """ Helper function to compute the ground truth latent vectors for no-op
-    state
-    Args:
-        state: List containing the ground truth state for the current each observation
-        env: current environment which is a dummy wrapper around a gym3 environment, from FakeEnv
-            class which is defined in train_agent.py
-        a_no_op: Integer. Defines no-op action for the current state
-    Returns:
-        phi_sp: the observation vector for the no-op state
-    """
-    # sample o_i ~ T(s, a_i)
-    env.callmethod("set_state", state)
-    o_i, rewards, dones, infos = env.step(np.ones((Config.NUM_ENVS,))*a_no_op)
-
-    # create one-hot encoding array for all actions
-    a = np.array([x for x in range(15)])
-    b = np.zeros((a.size, a.max()+1))
-    b[np.arange(a.size),a] = 1
-    
-    # extract one-hot encoding for no_op action
-    one_hot_a = b[a_no_op, :]
-    one_hot_actions = np.stack(Config.NUM_ENVS*[one_hot_a])
-    return o_i, one_hot_actions
-
 class MpiAdamOptimizer(tf.compat.v1.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
     def __init__(self, comm, **kwargs):
@@ -558,6 +451,9 @@ class Runner(AbstractEnvRunner):
 
         head_idx_current_batch = np.random.randint(0,Config.POLICY_NHEADS,1).item()
        
+
+       # ensure reset env has same step counter as main env
+        self.reset_env.current_env_steps_left = self.env.current_env_steps_left
         # For n in range number of steps
         for _ in range(self.nsteps):
             if Config.CUSTOM_REP_LOSS:
@@ -577,7 +473,6 @@ class Runner(AbstractEnvRunner):
 
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
-            
             self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
             
             for info in self.infos:
@@ -590,17 +485,13 @@ class Runner(AbstractEnvRunner):
         if Config.CUSTOM_REP_LOSS:
             s_0 = self.env.callmethod("get_state")
             
-            # ensure reset env has same step counter as main env
-            self.reset_env.current_env_steps_left = self.env.current_env_steps_left
+            
             states_nce, rewards_nce, dones_nce, infos_nce, labels_nce = self.get_NCE_samples(s_0, self.reset_env, self.obs.copy(), self.dones)
             anchors_nce = self.obs.copy()
         else:
             states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
 
         #batch of steps to batch of rollouts
-        # if Config.CUSTOM_REP_LOSS:
-        #     mb_phi_bars = np.stack(mb_phi_bars)
-        #     mb_one_hot_actions = np.stack(mb_one_hot_actions)
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         #vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)

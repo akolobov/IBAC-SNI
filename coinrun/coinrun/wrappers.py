@@ -99,12 +99,13 @@ class EpisodeRewardWrapper(gym.Wrapper):
         self.step = step
 
 class DistributionShiftWrapperVec(gym.Wrapper):
-    def __init__(self, env_list, steps_per_env):
+    def __init__(self, env_list, steps_per_env, log=False):
         """
         Takes 2 parameters:
         episodes_per_env: int, number of steps for each env before switching
         kwargs: dict of lists
         """
+        self.log = log
         self.envs = env_list
         self.steps_per_env = steps_per_env
 
@@ -120,13 +121,14 @@ class DistributionShiftWrapperVec(gym.Wrapper):
         self.switch_at_next_reset = False
 
     def reset(self):
+        return self.envs[self.current_env_idx].reset()
+
+    def step(self, action):
         if self.switch_at_next_reset:
             self.current_env_steps_left = self.steps_per_env
             self.current_env_idx = ( self.current_env_idx + 1 ) % len(self.envs)
             self.switch_at_next_reset = False
-        return self.envs[self.current_env_idx].reset()
-
-    def step(self, action):
+        
         next_state, reward, is_done, info =  self.envs[self.current_env_idx].step(action)
         self.current_env_steps_left = max(0, self.current_env_steps_left - Config.NUM_ENVS)
         if self.current_env_steps_left == 0:
