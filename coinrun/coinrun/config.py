@@ -2,6 +2,14 @@ from mpi4py import MPI
 import argparse
 import os
 import datetime
+
+def count_latent_factors(game):
+    if game == 'heist':
+        return 1
+    if game == 'leaper':
+        return 3
+    return 0
+
 class ConfigSingle(object):
     """
     A global config object that can be initialized from command line arguments or
@@ -56,15 +64,16 @@ class ConfigSingle(object):
         bool_keys.append(('rep_loss', 'custom_rep_loss'))
 
         # Weighting value for the custom representation loss
-        type_keys.append(('rep_lambda', 'rep_loss_weight', float, 1))
+        type_keys.append(('rep_lambda', 'rep_loss_weight', float, 0))
+
+        # total number of skills that can be sampled for DIAYN
+        type_keys.append(('n_skills', 'n_skills', int, 5))
 
         # The number of the GPU to be used (default is zero which should be the base GPU)
         type_keys.append(('gpu', 'num_gpus', int, 0))
 
         # Beta value for Info-loss KL divergence. -1 leaves this loss term out. 0 will probably diverge
         type_keys.append(('b', 'beta', float, -1., True))
-
-        type_keys.append(('n-heads', 'POLICY_NHEADS', int, 1, True))
 
         # Number of samples for MC averages when computing the loss 
         type_keys.append(('nr-samples', 'nr_samples', int, 1, True))
@@ -106,6 +115,8 @@ class ConfigSingle(object):
         type_keys.append(('arch', 'architecture', str, 'impala', True))
 
         type_keys.append(('env', 'environment', str, 'coinrun', True))
+
+        type_keys.append(('n-heads', 'POLICY_NHEADS', int, 1, True))
         
         # Should the model include an LSTM
         type_keys.append(('lstm', 'use_lstm', int, 0, True))
@@ -131,6 +142,12 @@ class ConfigSingle(object):
         type_keys.append(('ent', 'entropy_coeff', float, .01))
         type_keys.append(('lr', 'learning_rate', float, 5e-4))
         type_keys.append(('gamma', 'gamma', float, 0.999))
+
+        # RND
+        type_keys.append(('s_clip', 's_clip', float, 10))
+        type_keys.append(('r_clip', 'r_clip', float, 1))
+
+        type_keys.append(('agent', 'agent', str, "ppo"))
 
         # Should the agent's velocity be painted in the upper left corner of observations.
         # 1/0 means True/False

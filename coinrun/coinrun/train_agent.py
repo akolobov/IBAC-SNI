@@ -8,7 +8,13 @@ cd jobs/IBAC-SNI/coinrun
 python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss -n-heads 5 -m 10
 
 To plot (local):
-tensorboard --logdir=results-procgen/tb_log/baseline_0/ --host localhost --port 8888
+tensorboard --logdir=results-procgen/tb_log/ --host localhost --port 8888
+
+To test Procgen latent factors export:
+python -c "import gym;env=gym.make('procgen:procgen-heist-v0');env.reset();print(env.step(0))"
+
+To train with DIAYN
+python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss --agent ppo_diayn
 """
 import os
 import copy
@@ -20,7 +26,7 @@ from baselines.common import set_global_seeds
 from baselines.bench.monitor import ResultsWriter
 from collections import deque
 import coinrun.main_utils as utils
-from coinrun import setup_utils, policies, wrappers, ppo2
+from coinrun import setup_utils, policies, wrappers
 from coinrun.config import Config
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Sequence, Tuple
@@ -256,7 +262,13 @@ def main():
         policy = policies.get_policy()
 
         #sess.run(tf.compat.v1.global_variables_initializer())
-        ppo2.learn(policy=policy,
+        if Config.AGENT == 'ppo':
+            from coinrun import ppo2 as agent
+        elif Config.AGENT == 'ppo_rnd':
+            from coinrun import ppo2_rnd as agent
+        elif Config.AGENT == 'ppo_diayn':
+            from coinrun import ppo2_diayn as agent
+        agent.learn(policy=policy,
                     env=venv,
                     #env=env,
                     save_interval=save_interval,

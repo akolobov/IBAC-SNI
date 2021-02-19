@@ -143,7 +143,9 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, nbatch)
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
+            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Skill')
             # trajectories of length m, for N policy heads.
+            self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
             self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,64,64,3])
             self.ANCH_NCE = tf.compat.v1.placeholder(tf.float32, [Config.NUM_ENVS,64,64,3])
             # labels of Q value quantile bins
@@ -180,68 +182,34 @@ class CnnPolicy(object):
             first, second, _, _ = choose_cnn(self.ANCH_NCE)
             self.phi_anch_nce = tf.concat([first, second], axis=1)
 
+            first, second, _, _ = choose_cnn(self.STATE)
+            self.phi_STATE = tf.concat([first, second], axis=1)
+
         
         with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0] for _ in range(Config.POLICY_NHEADS)]
+                self.pd_train = []
+                for i in range(Config.POLICY_NHEADS):
+                    with tf.compat.v1.variable_scope("head_"+str(i), reuse=tf.compat.v1.AUTO_REUSE):
+                        self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
+            elif Config.AGENT == 'ppo_diayn':
+                with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
+                    self.h = tf.concat([self.h, Z], axis=1)
+                    self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
             else:
-                self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
+                with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
+                    self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
             
-            self.vf_train = fc(self.h, 'v', 1)[:, 0]
+            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
+                self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
+            else:
+                self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
+            self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0] # PPO+RND only
 
-            # if Config.CUSTOM_REP_LOSS:
-            #     with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-                    
-            #         # backprop aux loss on all parameters
-            #         params = tf.compat.v1.trainable_variables()
-            #         # Apply custom loss
-            #         trainer = None
-            #         if Config.SYNC_FROM_ROOT:
-            #             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, epsilon=1e-5)
-            #         else:
-            #             trainer = tf.compat.v1.train.AdamOptimizer( epsilon=1e-5)
-            #         grads_and_var = trainer.compute_gradients(self.rep_loss, params)
-            #         grads, var = zip(*grads_and_var)
-            #         if max_grad_norm is not None:
-            #             grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-            #         grads_and_var = list(zip(grads, var))
-            #         _custtrain = trainer.apply_gradients(grads_and_var)
-            # if Config.SNI:
-            #     assert Config.DROPOUT == 0
-            #     assert not Config.OPENAI
-            #     # Used with VIB: Noiseless pd_run and _both_ value functions
-            #     print("Activating SNI (includes VF)")
-
-            #     # Use deterministic value function for both as VIB for regression seems like a bad idea
-            #     self.vf_run = self.vf_train = fc(self.h_vf, 'v', 1)[:, 0]
-
-            #     # Have a deterministic run policy based on the mean
-            #     self.pd_run, _ = self.pdtype.pdfromlatent(self.h_vf, init_scale=0.01)
-            # elif Config.SNI2:
-            #     assert not Config.OPENAI
-            #     # Used with Dropout instead of OPENAI modifier
-            #     # 'RUN' versions are updated slowly, train versions updated faster, gradients are mixed
-            #     print("Activating SNI2")
-
-            #     # Deterministic bootstrap value... doesn't really matter but this is more consistent
-            #     self.vf_run = fc(h_vf, 'v', 1)[:, 0]
-
-            #     # Run policy based on slow changing latent
-            #     self.pd_run, _ = self.pdtype.pdfromlatent(h_vf, init_scale=0.01)
-            #     # Train is updated for each gradient update, slow is only updated once per batch
-            # elif Config.OPENAI:
-            #     # Completely overwrite train versions as everything changes slowly
-            #     # Train version is same as run version, both of which are slow
-            #     self.pd_run, _ = self.pdtype.pdfromlatent(h_vf, init_scale=0.01)
-            #     self.pd_train = self.pd_run
-            #     self.vf_run = self.vf_train = fc(h_vf, 'v', 1)[:, 0]
-
-            #     # Stochastic version is never used, so can set to ignore
-            #     self.train_dropout_assign_ops = []
-            # else:
             # Plain Dropout version: Only fast updates / stochastic latent for VIB
             self.pd_run = self.pd_train
             self.vf_run = self.vf_train
+            self.vf_i_run = self.vf_i_train
 
             # For Dropout: Always change layer, so slow layer is never used
             self.run_dropout_assign_ops = []
@@ -251,17 +219,35 @@ class CnnPolicy(object):
         neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
         self.initial_state = None
 
-        def step(ob, update_frac, head_idx, *_args, **_kwargs):
+        def step(ob, update_frac, head_idx, one_hot_skill=None, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
-            a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
-            return a, v, self.initial_state, neglogp
+            if Config.AGENT == 'ppo_rnd':
+                a, v,v_i, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx]], {X: ob})
+                return a, v, v_i, self.initial_state, neglogp
+            elif  Config.AGENT == 'ppo_diayn':
+                a, v,v_i, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx]], {X: ob, Z: one_hot_skill})
+                return a, v, v_i, self.initial_state, neglogp
+            elif not Config.CUSTOM_REP_LOSS:
+                head_idx = 0
+                a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
+                return a, v, self.initial_state, neglogp
+            else:
+                # a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
+                rets = sess.run(a0_run + self.vf_run + neglogp0_run, {X: ob})
+                a = rets[:Config.POLICY_NHEADS]
+                v = rets[Config.POLICY_NHEADS:2*Config.POLICY_NHEADS]
+                neglogp = rets[2*Config.POLICY_NHEADS:]
+                return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):
             return sess.run(self.h, {X: ob})
 
         def value(ob, update_frac, *_args, **_kwargs):
             return sess.run(self.vf_run, {X: ob})
+
+        def value_i(ob, update_frac, *_args, **_kwargs): 
+            return sess.run(self.vf_i_run, {X: ob})
 
         def custom_train(ob, rep_vecs):
             return sess.run([self.rep_loss], {X: ob, REP_PROC: rep_vecs})[0]
@@ -270,6 +256,7 @@ class CnnPolicy(object):
         self.processed_x = processed_x
         self.step = step
         self.value = value
+        self.value_i = value_i
         self.rep_vec = rep_vec
         self.custom_train = custom_train
         self.encoder = choose_cnn
