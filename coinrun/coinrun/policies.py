@@ -226,8 +226,8 @@ class CnnPolicy(object):
                 a, v,v_i, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx]], {X: ob})
                 return a, v, v_i, self.initial_state, neglogp
             elif  Config.AGENT == 'ppo_diayn':
-                a, v,v_i, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx]], {X: ob, Z: one_hot_skill})
-                return a, v, v_i, self.initial_state, neglogp
+                a, v,v_i, neglogp, rep_vec = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx], self.h], {X: ob, Z: one_hot_skill})
+                return a, v, v_i, self.initial_state, neglogp, rep_vec
             elif not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})

@@ -553,11 +553,9 @@ class Runner(AbstractEnvRunner):
                 nextvalues = last_values
             else:
                 nextnonterminal = 1.0 - mb_dones[t+1]
-                nextvalues = mb_values[t+1][self.model.head_idx_current_batch]
-            if Config.CUSTOM_REP_LOSS:
-                delta = mb_rewards[t] + self.gamma * nextvalues[self.model.head_idx_current_batch] * nextnonterminal - mb_values[t][self.model.head_idx_current_batch] # use critic that was doing rollouts
-            else:
-                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
+                nextvalues = mb_values[t+1][self.model.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else mb_values[t+1]
+                
+            delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         if Config.CUSTOM_REP_LOSS:
             mb_returns = mb_advs + mb_values[:,self.model.head_idx_current_batch] # use first critic

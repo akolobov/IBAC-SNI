@@ -219,12 +219,12 @@ class Model(object):
 		self.running_stats_r_i = RunningStats()
 		sess = tf.compat.v1.get_default_session()
 
-		self.discriminator = get_latent_discriminator()
+		print('label')
 		train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
 		act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
 		# in case we don't use rep loss
-		self.rep_loss = 0
+		MB_SKILLS = tf.compat.v1.placeholder(tf.float32, shape=[256, Config.NUM_ENVS, Config.N_SKILLS])
 		A = train_model.pdtype.sample_placeholder([None])
 		ADV = tf.compat.v1.placeholder(tf.float32, [None])
 		ADV_2 = tf.compat.v1.placeholder(tf.float32, [None])
@@ -276,8 +276,12 @@ class Model(object):
 			clipfrac_run = tf.constant(0.)
 
 		# custom rep loss
-			# insert categorical loss here!
-		diayn_loss = 0
+		# insert categorical loss here!
+		self.discriminator = get_latent_discriminator()
+		
+		skill_logits = discriminator(tf.stop_gradient(train_model.h))
+		
+		diayn_loss = tf.reduce_mean(tf.compat.v1.losses.softmax_cross_entropy(onehot_labels=MB_SKILLS, logits=skill_logits))
 
 		params = tf.compat.v1.trainable_variables()
 		weight_params = [v for v in params if '/b' not in v.name]
@@ -343,7 +347,7 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, values_i, neglogpacs, states=None):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, skills, obs, returns, returns_i, masks, actions, values, values_i, neglogpacs, states=None):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -351,13 +355,13 @@ class Model(object):
 			
 			advs_i = returns_i - values_i
 			
-			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, train_model.Z:}
+			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i}
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
-			return sess.run([pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, self.rep_loss, tot_norm, _train], td_map)[:-1]
+			return sess.run([pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, diayn_loss, tot_norm, _train], td_map)[:-1]
 			
-		self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'gradient_norm']
+		self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'discriminator_loss', 'gradient_norm']
 
 		def save(save_path):
 			ps = sess.run(params)
@@ -424,7 +428,7 @@ class Runner(AbstractEnvRunner):
 
 	def run(self, update_frac):
 		# Here, we init the lists that will contain the mb of experiences
-		mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[]
+		mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_dones, mb_neglogpacs, mb_infos, mb_rewards_i = [],[],[],[],[],[],[],[], []
 		mb_states = []
 		epinfos = []
 
@@ -445,7 +449,7 @@ class Runner(AbstractEnvRunner):
 				# Given observations, get action value and neglopacs
 				# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
 			
-			actions, values, values_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac, 0, one_hot_skill=one_hot_skill)
+			actions, values, values_i, self.states, neglogpacs, rep_vec = self.model.step(self.obs,  update_frac, 0, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
@@ -453,6 +457,9 @@ class Runner(AbstractEnvRunner):
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
 
+			skill_logits = self.model.discriminator(rep_vec)
+			rewards_i = np.log(skill_logits[:, z]) - np.log(1/Config.N_SKILLS)
+			mb_rewards_i.append(rewards_i)
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
@@ -463,7 +470,7 @@ class Runner(AbstractEnvRunner):
 			
 			mb_infos.append([[float(v) for k,v in info_.items() if k != 'episode'] for info_ in self.infos])
 			# switch this out to test it's effects
-			mb_rewards.append(2*rewards) # extrinsic rewards are x2 bigger than intrinsic
+			mb_rewards.append(rewards) # extrinsic rewards are x2 bigger than intrinsic
 
 
 			states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
@@ -483,13 +490,13 @@ class Runner(AbstractEnvRunner):
 		last_values_i = self.model.value_i(self.obs, update_frac, self.states, self.dones)[0]
 		# DIAYN
 		sess = tf.compat.v1.get_default_session()
-		mb_rewards_i = np.zeros_like(mb_rewards)
-		for t in range(self.nsteps):    
-			td_map = {self.model.train_model.STATE:mb_obs[t]}
-			mb_rewards_i[t] = sess.run([self.model.rep_loss],td_map)[0]
-			# try with and without normalizing rewards
-			mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, True)            
-			buffer_r_i = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)
+		# mb_rewards_i = np.zeros_like(mb_rewards)
+		# # for t in range(self.nsteps):    
+		# 	td_map = {self.model.train_model.STATE:mb_obs[t]}
+		# 	mb_rewards_i[t] = sess.run([self.model.rep_loss],td_map)[0]
+		# 	# try with and without normalizing rewards
+		# 	mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, True)            
+		# 	buffer_r_i = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)
 
 		# discount/bootstrap off value fn
 		mb_returns = np.zeros_like(mb_rewards)
@@ -519,7 +526,7 @@ class Runner(AbstractEnvRunner):
 			
 		mb_returns = mb_advs + mb_values
 		mb_returns_i = mb_advs_i + mb_values_i
-		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_neglogpacs, mb_infos)), states_nce, anchors_nce, labels_nce, epinfos)
+		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_neglogpacs, mb_infos)), states_nce, anchors_nce, labels_nce, mb_skill, epinfos)
 
 def sf01(arr):
 	"""
@@ -608,7 +615,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 		run_tstart = time.time()
 
 		packed = runner.run(update_frac=update/nupdates)
-		obs, returns, returns_i, masks, actions, values, values_i, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos = packed
+		obs, returns, returns_i, masks, actions, values, values_i, neglogpacs, infos, states_nce, anchors_nce, labels_nce, skills, epinfos = packed
 		
 		# reshape our augmented state vectors to match first dim of observation array
 		# (mb_size*num_envs, 64*64*RGB)
@@ -635,7 +642,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, neglogpacs))
-				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices))
+				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, skill, *slices))
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])
