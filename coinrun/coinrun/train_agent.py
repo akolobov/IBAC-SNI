@@ -14,7 +14,7 @@ To test Procgen latent factors export:
 python -c "import gym;env=gym.make('procgen:procgen-heist-v0');env.reset();print(env.step(0))"
 
 To train with DIAYN
-python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss --agent ppo_diayn
+python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --rep_loss --agent ppo_diayn
 """
 import os
 import copy

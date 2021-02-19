@@ -555,7 +555,11 @@ class Runner(AbstractEnvRunner):
                 nextnonterminal = 1.0 - mb_dones[t+1]
                 nextvalues = mb_values[t+1][self.model.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else mb_values[t+1]
                 
-            delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
+            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
+                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t][self.model.head_idx_current_batch]
+            else:
+                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
+
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         if Config.CUSTOM_REP_LOSS:
             mb_returns = mb_advs + mb_values[:,self.model.head_idx_current_batch] # use first critic

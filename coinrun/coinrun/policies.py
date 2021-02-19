@@ -194,8 +194,8 @@ class CnnPolicy(object):
                         self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
             elif Config.AGENT == 'ppo_diayn':
                 with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
-                    self.h = tf.concat([self.h, Z], axis=1)
-                    self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
+                    self.h_skill = tf.concat([self.h, Z], axis=1)
+                    self.pd_train = [self.pdtype.pdfromlatent(self.h_skill, init_scale=0.01)[0]]
             else:
                 with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
                     self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
@@ -261,6 +261,7 @@ class CnnPolicy(object):
         self.custom_train = custom_train
         self.encoder = choose_cnn
         self.REP_PROC = REP_PROC
+        self.Z = Z
 
 
 def get_policy():

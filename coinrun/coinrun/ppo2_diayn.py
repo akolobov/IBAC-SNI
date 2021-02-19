@@ -21,7 +21,7 @@ from coinrun.tb_utils import TB_Writer
 import coinrun.main_utils as utils
 
 from coinrun.train_agent import make_env
-from coinrun.config import Config, count_latent_factors
+from coinrun.config import Config
 
 mpi_print = utils.mpi_print
 
@@ -219,12 +219,11 @@ class Model(object):
 		self.running_stats_r_i = RunningStats()
 		sess = tf.compat.v1.get_default_session()
 
-		print('label')
 		train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
 		act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
 		# in case we don't use rep loss
-		MB_SKILLS = tf.compat.v1.placeholder(tf.float32, shape=[256, Config.NUM_ENVS, Config.N_SKILLS])
+		#MB_SKILLS = tf.compat.v1.placeholder(tf.float32, shape=[nbatch_train, Config.N_SKILLS])
 		A = train_model.pdtype.sample_placeholder([None])
 		ADV = tf.compat.v1.placeholder(tf.float32, [None])
 		ADV_2 = tf.compat.v1.placeholder(tf.float32, [None])
@@ -279,9 +278,9 @@ class Model(object):
 		# insert categorical loss here!
 		self.discriminator = get_latent_discriminator()
 		
-		skill_logits = discriminator(tf.stop_gradient(train_model.h))
+		skill_logits = self.discriminator(tf.stop_gradient(train_model.h))
 		
-		diayn_loss = tf.reduce_mean(tf.compat.v1.losses.softmax_cross_entropy(onehot_labels=MB_SKILLS, logits=skill_logits))
+		diayn_loss = tf.reduce_mean(tf.compat.v1.losses.softmax_cross_entropy(onehot_labels=train_model.Z, logits=skill_logits))
 
 		params = tf.compat.v1.trainable_variables()
 		weight_params = [v for v in params if '/b' not in v.name]
@@ -320,7 +319,7 @@ class Model(object):
 		# print(info_loss)
 		assert len(info_loss) == 1
 		info_loss = info_loss[0]
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + self.rep_loss
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + diayn_loss
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -347,7 +346,7 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, skills, obs, returns, returns_i, masks, actions, values, values_i, neglogpacs, states=None):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, values_i, neglogpacs, skills, states=None):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -355,7 +354,7 @@ class Model(object):
 			
 			advs_i = returns_i - values_i
 			
-			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i}
+			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, train_model.Z:skills}
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
@@ -443,7 +442,7 @@ class Runner(AbstractEnvRunner):
 		one_hot_skill = np.stack(Config.NUM_ENVS*[one_hot_skill])
 		# skill remains fixed for each minibatch
 		mb_skill = np.asarray([one_hot_skill]*self.nsteps, dtype=np.float32)
-
+		mb_skill = np.reshape(mb_skill, (-1, Config.N_SKILLS))
 		# For n in range number of steps
 		for t in range(self.nsteps):
 				# Given observations, get action value and neglopacs
@@ -457,13 +456,13 @@ class Runner(AbstractEnvRunner):
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
 
-			skill_logits = self.model.discriminator(rep_vec)
-			rewards_i = np.log(skill_logits[:, z]) - np.log(1/Config.N_SKILLS)
+			skill_logits = self.model.discriminator.predict(rep_vec)
+			skill_probs = tf.nn.softmax(skill_logits).eval()
+			rewards_i = np.log(skill_probs[:, z]) - np.log(1/Config.N_SKILLS)
 			mb_rewards_i.append(rewards_i)
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
-			
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
 				if maybeepinfo: epinfos.append(maybeepinfo)
@@ -480,6 +479,7 @@ class Runner(AbstractEnvRunner):
 		
 		#vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
 		mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
+		mb_rewards_i = np.asarray(mb_rewards_i, dtype=np.float32)
 		mb_actions = np.asarray(mb_actions)
 		mb_values = np.asarray(mb_values, dtype=np.float32)
 		mb_values_i = np.asarray(mb_values_i, dtype=np.float32)
@@ -641,8 +641,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, neglogpacs))
-				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, skill, *slices))
+				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, neglogpacs, skills))
+				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices))
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])
