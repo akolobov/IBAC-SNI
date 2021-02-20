@@ -172,52 +172,58 @@ class CnnPolicy(object):
             #     self.pd_train.neglogp = lambda a: - self.pd_train.log_prob(a)
             #     self.vf_train = tf.reduce_mean(tf.reshape(fc(self.h, 'v', 1), shape=(Config.NR_SAMPLES, -1, 1)), 0)[:, 0]
             # else:
+        if Config.AGENT == 'ppo_diayn':
+            with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+                self.h_skill = tf.concat([self.h, Z], axis=1)
+                self.pd_train = self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]
+                self.vf_train = fc(self.h, 'v', 1)[:, 0]
+                self.pd_run = self.pd_train
+                self.vf_run = self.vf_train
+                a0_run = self.pd_run.sample()
+                neglogp0_run = self.pd_train.neglogp(a0_run)
+                self.initial_state = None
+        else:
+            # create phi(s') using the same encoder
+            with tf.variable_scope("model", reuse=True) as scope:
+                first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
+                # ( m * K * N, hidden_dim)
+                self.phi_traj_nce = tf.concat([first, second], axis=1)
 
-        # create phi(s') using the same encoder
-        with tf.variable_scope("model", reuse=True) as scope:
-            first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
-            # ( m * K * N, hidden_dim)
-            self.phi_traj_nce = tf.concat([first, second], axis=1)
+                first, second, _, _ = choose_cnn(self.ANCH_NCE)
+                self.phi_anch_nce = tf.concat([first, second], axis=1)
 
-            first, second, _, _ = choose_cnn(self.ANCH_NCE)
-            self.phi_anch_nce = tf.concat([first, second], axis=1)
+                first, second, _, _ = choose_cnn(self.STATE)
+                self.phi_STATE = tf.concat([first, second], axis=1)
 
-            first, second, _, _ = choose_cnn(self.STATE)
-            self.phi_STATE = tf.concat([first, second], axis=1)
-
-        
-        with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                self.pd_train = []
-                for i in range(Config.POLICY_NHEADS):
-                    with tf.compat.v1.variable_scope("head_"+str(i), reuse=tf.compat.v1.AUTO_REUSE):
-                        self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
-            elif Config.AGENT == 'ppo_diayn':
-                with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
-                    self.h_skill = tf.concat([self.h, Z], axis=1)
-                    self.pd_train = [self.pdtype.pdfromlatent(self.h_skill, init_scale=0.01)[0]]
-            else:
-                with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
-                    self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
             
-            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
-            else:
-                self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
-            self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0] # PPO+RND only
+            with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+                if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
+                    self.pd_train = []
+                    for i in range(Config.POLICY_NHEADS):
+                        with tf.compat.v1.variable_scope("head_"+str(i), reuse=tf.compat.v1.AUTO_REUSE):
+                            self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
+                else:
+                    with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
+                        self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
+                
+                if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
+                    self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
+                else:
+                    self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
+                self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0] # PPO+RND only
 
-            # Plain Dropout version: Only fast updates / stochastic latent for VIB
-            self.pd_run = self.pd_train
-            self.vf_run = self.vf_train
-            self.vf_i_run = self.vf_i_train
+                # Plain Dropout version: Only fast updates / stochastic latent for VIB
+                self.pd_run = self.pd_train
+                self.vf_run = self.vf_train
+                self.vf_i_run = self.vf_i_train
 
-            # For Dropout: Always change layer, so slow layer is never used
-            self.run_dropout_assign_ops = []
+                # For Dropout: Always change layer, so slow layer is never used
+                self.run_dropout_assign_ops = []
 
-        # Use the current head for classical PPO updates
-        a0_run = [self.pd_run[head_idx].sample() for head_idx in range(Config.POLICY_NHEADS)]
-        neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
-        self.initial_state = None
+            # Use the current head for classical PPO updates
+            a0_run = [self.pd_run[head_idx].sample() for head_idx in range(Config.POLICY_NHEADS)]
+            neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
+            self.initial_state = None
 
         def step(ob, update_frac, head_idx, one_hot_skill=None, *_args, **_kwargs):
             if Config.REPLAY:
@@ -226,8 +232,8 @@ class CnnPolicy(object):
                 a, v,v_i, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx]], {X: ob})
                 return a, v, v_i, self.initial_state, neglogp
             elif  Config.AGENT == 'ppo_diayn':
-                a, v,v_i, neglogp, rep_vec = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx], self.h], {X: ob, Z: one_hot_skill})
-                return a, v, v_i, self.initial_state, neglogp, rep_vec
+                a, v, neglogp, rep_vec = sess.run([a0_run, self.vf_run, neglogp0_run, self.h], {X: ob, Z: one_hot_skill})
+                return a, v, neglogp, rep_vec
             elif not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})

@@ -5,17 +5,29 @@ To run:
 
 conda activate aidl
 cd jobs/IBAC-SNI/coinrun
-python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss -n-heads 5 -m 10
 
+
+Our algo:
+python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss -n-heads 5 -m 10 -rep_lambda 1
+
+DIAYN:
+python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --rep_loss --agent ppo_diayn
+--------------------------------------------------------------------------------------------------------------------------------
 To plot (local):
 tensorboard --logdir=results-procgen/tb_log/ --host localhost --port 8888
 
 To test Procgen latent factors export:
 python -c "import gym;env=gym.make('procgen:procgen-heist-v0');env.reset();print(env.step(0))"
+--------------------------------------------------------------------------------------------------------------------------------
 
-To train with DIAYN
-python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --rep_loss --agent ppo_diayn
+To launch on Dilbert:
+
+conda activate dilbert
+cd ~/jobs/dilbert/rl_nexus/
+python jobs_launcher.py --env plunder coinrun caveflyer leaper jumper maze heist climber ninja --nheads 5 --m 5 --rep_lambda 1
+bash extract_and_plot.sh
 """
+
 import os
 import copy
 import time
@@ -242,7 +254,6 @@ def main():
     if Config.LONG_TRAINING:
         total_timesteps = int(200e6)
     elif Config.SHORT_TRAINING:
-        #total_timesteps = int(120e6)
         total_timesteps = int(25e6)
     elif Config.VERY_SHORT_TRAINING:
         total_timesteps = int(5e6)
