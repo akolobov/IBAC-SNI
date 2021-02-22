@@ -174,14 +174,6 @@ def aug_w_acts(latents, nbatch):
 
 # prediction layer 
 
-def get_rnd_predictor(trainable):
-    inputs = tf.keras.layers.Input((256, ))
-    p = tf.keras.layers.Dense(1024,trainable=trainable)(inputs)
-
-    h = tf.keras.Model(inputs, p)
-
-    return h
-
 def tanh_clip(x, clip_val=20.):
     '''
     soft clip values to the range [-clip_val, +clip_val]
@@ -217,8 +209,10 @@ class Model(object):
         ADV_2 = tf.compat.v1.placeholder(tf.float32, [None])
         ADV = ADV + ADV_2
         R = tf.compat.v1.placeholder(tf.float32, [None])
+        R_i = tf.compat.v1.placeholder(tf.float32, [None])
         OLDNEGLOGPAC = tf.compat.v1.placeholder(tf.float32, [None])
         OLDVPRED = tf.compat.v1.placeholder(tf.float32, [None])
+        OLDVPRED_i = tf.compat.v1.placeholder(tf.float32, [None])
         LR = tf.compat.v1.placeholder(tf.float32, [])
         CLIPRANGE = tf.compat.v1.placeholder(tf.float32, [])
         # VF loss
@@ -227,6 +221,12 @@ class Model(object):
         vf_losses1 = tf.square(vpred - R)
         vf_losses2 = tf.square(vpredclipped - R)
         vf_loss = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1, vf_losses2))
+
+        vpred_i = train_model.vf_i_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
+        vpredclipped_i = OLDVPRED_i + tf.clip_by_value(train_model.vf_i_train - OLDVPRED_i, - CLIPRANGE, CLIPRANGE)
+        vf_losses1_i = tf.square(vpred_i - R_i)
+        vf_losses2_i = tf.square(vpredclipped_i - R_i)
+        vf_loss_i = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1_i, vf_losses2_i))
 
         neglogpac_train = train_model.pd_train[0].neglogp(A)
         ratio_train = tf.exp(OLDNEGLOGPAC - neglogpac_train)
@@ -260,16 +260,8 @@ class Model(object):
             approxkl_run = tf.constant(0.)
             clipfrac_run = tf.constant(0.)
 
-        """
-        RND loss
-        """
-
-        self.rnd_target = get_rnd_predictor(trainable=False)(train_model.phi_STATE)
-        self.rnd_pred = get_rnd_predictor(trainable=True)(train_model.phi_STATE)
-
-        self.rep_loss = .5 * tf.reduce_mean(tf.square(tf.stop_gradient(self.rnd_target) - self.rnd_pred))
-
-       
+        
+        rep_loss = 0.5 * tf.reduce_mean(train_model.rnd_diff)
 
         params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
@@ -309,7 +301,7 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + self.rep_loss
+        loss = pg_loss - entropy*ent_coef + vf_loss*vf_coef + l2_loss*Config.L2_WEIGHT + beta*info_loss                 + rep_loss + vf_loss_i*vf_coef
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -343,24 +335,27 @@ class Model(object):
             advs = (advs - adv_mean) / (adv_std + 1e-8)
 
             advs_i = returns_i - values_i
+            adv_mean_i = np.mean(advs_i, axis=0, keepdims=True)
+            adv_std_i = np.std(advs_i, axis=0, keepdims=True)
+            advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
 
             if Config.CUSTOM_REP_LOSS:
                 td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE_NCE:states_nce, train_model.ANCH_NCE:anchors_nce, train_model.LAB_NCE:labels_nce, train_model.STATE:obs, ADV_2:advs_i}
+                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE_NCE:states_nce, train_model.ANCH_NCE:anchors_nce, train_model.LAB_NCE:labels_nce, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i}
             else:
-                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i}
+                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
             
             if Config.CUSTOM_REP_LOSS:
                 return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, tot_norm, _train],
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, tot_norm, vf_loss_i, _train],
                     td_map
                 )[:-1]
             else:
                 return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, self.rep_loss, _train],
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, vf_loss_i, _train],
                     td_map
                 )[:-1]
             
@@ -424,11 +419,11 @@ class Runner(AbstractEnvRunner):
 
     def run(self, update_frac):
         # Here, we init the lists that will contain the mb of experiences
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[]
+        mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_rewards_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[],[]
         mb_states = []
         epinfos = []
 
-        head_idx_current_batch = np.random.randint(0,Config.POLICY_NHEADS,1).item()
+        head_idx_current_batch = 0 #np.random.randint(0,Config.POLICY_NHEADS,1).item()
        
 
        # ensure reset env has same step counter as main env
@@ -438,7 +433,7 @@ class Runner(AbstractEnvRunner):
             # Given observations, get action value and neglopacs
             # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
             
-            actions, values, values_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac,0, self.dones)
+            actions, values, values_i, r_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac, 0, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -455,7 +450,8 @@ class Runner(AbstractEnvRunner):
                 if maybeepinfo: epinfos.append(maybeepinfo)
                 
             mb_infos.append([[float(v) for k,v in info_.items() if k != 'episode'] for info_ in self.infos])
-            mb_rewards.append(2*rewards) # extrinsic rewards are x2 bigger than intrinsic
+            mb_rewards.append(rewards) # extrinsic rewards are x2 bigger than intrinsic
+            mb_rewards_i.append(r_i) 
 
  
         states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
@@ -474,13 +470,11 @@ class Runner(AbstractEnvRunner):
         last_values_i = self.model.value_i(self.obs, update_frac, self.states, self.dones)[0]
         # RND
         sess = tf.compat.v1.get_default_session()
-        mb_rewards_i = np.zeros_like(mb_rewards)
+        # mb_rewards_i = np.zeros_like(mb_rewards)
         for t in range(self.nsteps):    
-            td_map = {self.model.train_model.STATE:mb_obs[t]}
-            mb_rewards_i[t] = sess.run([self.model.rep_loss],td_map)[0]
+            mb_rewards_i[t] = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)       
 
-            mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, True)            
-            buffer_r_i = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)
+            mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, False)    
 
         # discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)

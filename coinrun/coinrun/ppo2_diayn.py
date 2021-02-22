@@ -40,54 +40,54 @@ from random import choice
 RND methods
 """
 
-class RunningStats(object):
-    # https://github.com/ChuaCheowHuan/reinforcement_learning/blob/master/RND_PPO/RND_PPO_cont_ftr_nsn_mtCar_php.ipynb
-    def __init__(self, epsilon=1e-4, shape=()):
-        self.mean = np.zeros(shape, 'float64')
-        self.var = np.ones(shape, 'float64')
-        self.std = np.ones(shape, 'float64')
-        self.count = epsilon
+# class RunningStats(object):
+#     # https://github.com/ChuaCheowHuan/reinforcement_learning/blob/master/RND_PPO/RND_PPO_cont_ftr_nsn_mtCar_php.ipynb
+#     def __init__(self, epsilon=1e-4, shape=()):
+#         self.mean = np.zeros(shape, 'float64')
+#         self.var = np.ones(shape, 'float64')
+#         self.std = np.ones(shape, 'float64')
+#         self.count = epsilon
 
-    def update(self, x):
-        batch_mean = np.mean(x, axis=0)
-        batch_var = np.var(x, axis=0)
-        batch_count = x.shape[0]
-        self.update_from_moments(batch_mean, batch_var, batch_count)
+#     def update(self, x):
+#         batch_mean = np.mean(x, axis=0)
+#         batch_var = np.var(x, axis=0)
+#         batch_count = x.shape[0]
+#         self.update_from_moments(batch_mean, batch_var, batch_count)
 
-    def update_from_moments(self, batch_mean, batch_var, batch_count):
-        delta = batch_mean - self.mean
-        
-        new_mean = self.mean + delta * batch_count / (self.count + batch_count)
-        m_a = self.var * self.count
-        m_b = batch_var * batch_count
-        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / (self.count + batch_count)
-        new_var = M2 / (self.count + batch_count)
+#     def update_from_moments(self, batch_mean, batch_var, batch_count):
+#         delta = batch_mean - self.mean
+		
+#         new_mean = self.mean + delta * batch_count / (self.count + batch_count)
+#         m_a = self.var * self.count
+#         m_b = batch_var * batch_count
+#         M2 = m_a + m_b + np.square(delta) * self.count * batch_count / (self.count + batch_count)
+#         new_var = M2 / (self.count + batch_count)
 
-        self.mean = new_mean
-        self.var = new_var
-        self.std = np.maximum(np.sqrt(self.var), 1e-6)
-        #self.std = np.sqrt(np.maximum(self.var, 1e-2))                            
-        self.count = batch_count + self.count
+#         self.mean = new_mean
+#         self.var = new_var
+#         self.std = np.maximum(np.sqrt(self.var), 1e-6)
+#         #self.std = np.sqrt(np.maximum(self.var, 1e-2))                            
+#         self.count = batch_count + self.count
 
-def running_stats_fun(run_stats, buf, clip, clip_state):
-    run_stats.update(np.array(buf))
-    buf = (np.array(buf) - run_stats.mean) / run_stats.std   
-    if clip_state == True:
-      buf = np.clip(buf, -clip, clip)
-    return buf
+# def running_stats_fun(run_stats, buf, clip, clip_state):
+#     run_stats.update(np.array(buf))
+#     buf = (np.array(buf) - run_stats.mean) / run_stats.std   
+#     if clip_state == True:
+#       buf = np.clip(buf, -clip, clip)
+#     return buf
 
-def state_next_normalize(sample_size, running_stats_s_):
-    buffer_s_ = []
-    s = env.reset()  
-    for i in range(sample_size):
-        a = env.action_space.sample()
-        s_, r, done, _ = env.step(a)
-        buffer_s_.append(s_)    
-    running_stats_s_.update(np.array(buffer_s_))
+# def state_next_normalize(sample_size, running_stats_s_):
+#     buffer_s_ = []
+#     s = env.reset()  
+#     for i in range(sample_size):
+#         a = env.action_space.sample()
+#         s_, r, done, _ = env.step(a)
+#         buffer_s_.append(s_)    
+#     running_stats_s_.update(np.array(buffer_s_))
 
-"""
-END RND
-"""
+# """
+# END RND
+# """
 
 # helper function to turn numpy array into video file
 def vidwrite(filename, images, framerate=60, vcodec='libx264'):
@@ -276,12 +276,12 @@ class Model(object):
 
 		# custom rep loss
 		# insert categorical loss here!
-		self.discriminator = get_latent_discriminator()
+		#self.discriminator = get_latent_discriminator()
 		
-		skill_logits = self.discriminator(tf.stop_gradient(train_model.h))
+		#skill_logits = self.discriminator(tf.stop_gradient(train_model.h))
 		
-		diayn_loss = tf.reduce_mean(tf.compat.v1.losses.softmax_cross_entropy(onehot_labels=train_model.Z, logits=skill_logits))
-
+		diayn_loss = tf.compat.v1.constant(0)
+		#tf.reduce_mean(tf.compat.v1.losses.softmax_cross_entropy(onehot_labels=train_model.Z, logits=skill_logits))
 		params = tf.compat.v1.trainable_variables()
 		weight_params = [v for v in params if '/b' not in v.name]
 
@@ -319,7 +319,7 @@ class Model(object):
 		# print(info_loss)
 		assert len(info_loss) == 1
 		info_loss = info_loss[0]
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + diayn_loss
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss# + diayn_loss
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -346,7 +346,7 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, neglogpacs, skills, states=None):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, neglogpacs, states=None):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -354,7 +354,7 @@ class Model(object):
 			
 			advs_i = returns_i - values
 			
-			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, train_model.Z:skills}
+			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i}
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
@@ -420,9 +420,9 @@ class Runner(AbstractEnvRunner):
 		self.reset_env = make_env(steps_per_env=total_timesteps//2)
 
 		# create one-hot encoding array for all possible skills
-		a = np.array([x for x in range(Config.N_SKILLS)])
-		self.one_hot_skills = np.zeros((a.size, a.max()+1))
-		self.one_hot_skills[np.arange(a.size),a] = 1
+		#a = np.array([x for x in range(Config.N_SKILLS)])
+		#self.one_hot_skills = np.zeros((a.size, a.max()+1))
+		#self.one_hot_skills[np.arange(a.size),a] = 1
 
 
 	def run(self, update_frac):
@@ -434,31 +434,31 @@ class Runner(AbstractEnvRunner):
 		# ensure reset env has same step counter as main env
 		self.reset_env.current_env_steps_left = self.env.current_env_steps_left
 
-		# sample skill for this episode
-		z = np.random.randint(0, high=Config.N_SKILLS)
+		# # sample skill for this episode
+		# z = np.random.randint(0, high=Config.N_SKILLS)
 
-		# extract one-hot encoding for skill
-		one_hot_skill = self.one_hot_skills[z, :]
-		one_hot_skill = np.stack(Config.NUM_ENVS*[one_hot_skill])
-		# skill remains fixed for each minibatch
-		mb_skill = np.asarray([one_hot_skill]*self.nsteps, dtype=np.float32)
-		mb_skill = np.reshape(mb_skill, (-1, Config.N_SKILLS))
+		# # extract one-hot encoding for skill
+		# one_hot_skill = self.one_hot_skills[z, :]
+		# one_hot_skill = np.stack(Config.NUM_ENVS*[one_hot_skill])
+		# # skill remains fixed for each minibatch
+		# mb_skill = np.asarray([one_hot_skill]*self.nsteps, dtype=np.float32)
+		# mb_skill = np.reshape(mb_skill, (-1, Config.N_SKILLS))
 		# For n in range number of steps
-		for t in range(self.nsteps):
+		for _ in range(self.nsteps):
 				# Given observations, get action value and neglopacs
 				# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
 			
-			actions, values, neglogpacs, rep_vec = self.model.step(self.obs,  update_frac, 0, one_hot_skill=one_hot_skill)
+			actions, values, neglogpacs = self.model.step(self.obs,  update_frac, 0, one_hot_skill=0)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
 
-			skill_logits = self.model.discriminator.predict(rep_vec)
-			skill_probs = tf.nn.softmax(skill_logits).eval()
-			rewards_i = np.log(skill_probs[:, z]) - np.log(1/Config.N_SKILLS)
-			mb_rewards_i.append(rewards_i)
+			#skill_logits = self.model.discriminator.predict(rep_vec)
+			#skill_probs = tf.nn.softmax(skill_logits).eval()
+			#rewards_i = np.log(skill_probs[:, z]) - np.log(1/Config.N_SKILLS)
+			
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
@@ -467,8 +467,10 @@ class Runner(AbstractEnvRunner):
 				if maybeepinfo: epinfos.append(maybeepinfo)
 			
 			mb_infos.append([[float(v) for k,v in info_.items() if k != 'episode'] for info_ in self.infos])
+			mb_rewards.append(2*rewards) # extrinsic rewards are x2 bigger than intrinsic
 			# switch this out to test it's effects
-			mb_rewards.append(rewards) # extrinsic rewards are x2 bigger than intrinsic
+			#mb_rewards.append(rewards) # extrinsic rewards are x2 bigger than intrinsic
+			#mb_rewards_i.append(rewards)
 
 
 			states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
@@ -478,21 +480,24 @@ class Runner(AbstractEnvRunner):
 		
 		#vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
 		mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
-		mb_rewards_i = np.asarray(mb_rewards_i, dtype=np.float32)
+		#mb_rewards_i = np.asarray(mb_rewards_i, dtype=np.float32)
 		mb_actions = np.asarray(mb_actions)
 		mb_values = np.asarray(mb_values, dtype=np.float32)
+		mb_values_i = np.asarray(mb_values, dtype=np.float32)
 		mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
 		mb_infos = np.asarray(mb_infos, dtype=np.float32)
 		mb_dones = np.asarray(mb_dones, dtype=np.bool)
 		last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[0]
-		# DIAYN
-		# mb_rewards_i = np.zeros_like(mb_rewards)
-		# # for t in range(self.nsteps):    
-		# 	td_map = {self.model.train_model.STATE:mb_obs[t]}
-		# 	mb_rewards_i[t] = sess.run([self.model.rep_loss],td_map)[0]
-		# 	# try with and without normalizing rewards
-		# 	mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, True)            
-		# 	buffer_r_i = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)
+		last_values_i = last_values#self.model.value_i(self.obs, update_frac, self.states, self.dones)[0]
+		# RND
+		sess = tf.compat.v1.get_default_session()
+		mb_rewards_i = np.zeros_like(mb_rewards)
+		for t in range(self.nsteps):    
+			td_map = {self.model.train_model.STATE:mb_obs[t]}
+			mb_rewards_i[t] = mb_rewards[t]#sess.run([self.model.rep_loss],td_map)[0]
+
+			#mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, True)            
+			#buffer_r_i = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)
 
 		# discount/bootstrap off value fn
 		mb_returns = np.zeros_like(mb_rewards)
@@ -509,20 +514,26 @@ class Runner(AbstractEnvRunner):
 				nextvalues = mb_values[t+1]
 			delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
 			mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
-			# intrinsic rewards
+
+			"""
+			Intrinsic advantages
+			"""
 			if t == self.nsteps - 1:
 				nextnonterminal = 1.0 - self.dones
-				nextvalues = last_values
+				nextvalues = last_values_i
 			else:
 				nextnonterminal = 1.0 - mb_dones[t+1]
-				nextvalues = mb_values[t+1]
+				nextvalues = mb_values_i[t+1]
 
-			delta = mb_rewards_i[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
+			delta = mb_rewards_i[t] + self.gamma * nextvalues * nextnonterminal - mb_values_i[t]
 			mb_advs_i[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam_i
 			
 		mb_returns = mb_advs + mb_values
-		mb_returns_i = mb_advs_i + mb_values
-		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_infos)), states_nce, anchors_nce, labels_nce, mb_skill, epinfos)
+		mb_returns_i = mb_advs_i + mb_values_i
+
+
+		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_neglogpacs, mb_infos)),
+			states_nce, anchors_nce, labels_nce, epinfos)
 
 def sf01(arr):
 	"""
@@ -637,7 +648,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, neglogpacs, skills))
+				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, neglogpacs))
 				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices))
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])

@@ -129,6 +129,12 @@ def choose_cnn(images):
     else:
         assert(False)
 
+def get_rnd_predictor(trainable):
+    inputs = tf.keras.layers.Input((256, ))
+    p = tf.keras.layers.Dense(1024,trainable=trainable)(inputs)
+    h = tf.keras.Model(inputs, p)
+    return h
+
 
 class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
@@ -143,7 +149,7 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, nbatch)
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
-            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Skill')
+            #Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Skill')
             # trajectories of length m, for N policy heads.
             self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
             self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,64,64,3])
@@ -157,32 +163,17 @@ class CnnPolicy(object):
             # stack together action invariant & conditioned layers for full representation layer
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
 
-            # NOTE: (Ahmed) I commented out all the IBAC-SNI settings to make this easier to read
-            # since we shouldn't be using any of these settings anyway.
-            # Noisy policy and value function for train
-            # if Config.BETA >= 0:
-            #     pdparam = _matching_fc(self.h, 'pi', ac_space.n, init_scale=1.0, init_bias=0)
-            #     pdparam = tf.reshape(pdparam, shape=(Config.NR_SAMPLES, -1, ac_space.n))
-            #     pdparam = tf.transpose(pdparam, perm=[1,0,2])
-
-            #     dists = ds.Categorical(logits=pdparam)
-            #     self.pd_train = ds.MixtureSameFamily(
-            #         mixture_distribution=ds.Categorical(probs=[1./Config.NR_SAMPLES]*Config.NR_SAMPLES),
-            #         components_distribution=dists)
-            #     self.pd_train.neglogp = lambda a: - self.pd_train.log_prob(a)
-            #     self.vf_train = tf.reduce_mean(tf.reshape(fc(self.h, 'v', 1), shape=(Config.NR_SAMPLES, -1, 1)), 0)[:, 0]
-            # else:
         if Config.AGENT == 'ppo_diayn':
             with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-                self.h_skill = tf.concat([self.h, Z], axis=1)
+                #self.h_skill = tf.concat([self.h, Z], axis=1)
                 self.pd_train = self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]
                 self.vf_train = fc(self.h, 'v', 1)[:, 0]
                 self.pd_run = self.pd_train
                 self.vf_run = self.vf_train
-                a0_run = self.pd_run.sample()
-                neglogp0_run = self.pd_train.neglogp(a0_run)
-                self.initial_state = None
-        else:
+            a0_run = self.pd_run.sample()
+            neglogp0_run = self.pd_train.neglogp(a0_run)
+            self.initial_state = None
+        elif Config.AGENT == 'ppo' and Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
             # create phi(s') using the same encoder
             with tf.variable_scope("model", reuse=True) as scope:
                 first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
@@ -192,10 +183,20 @@ class CnnPolicy(object):
                 first, second, _, _ = choose_cnn(self.ANCH_NCE)
                 self.phi_anch_nce = tf.concat([first, second], axis=1)
 
-                first, second, _, _ = choose_cnn(self.STATE)
-                self.phi_STATE = tf.concat([first, second], axis=1)
+                # first, second, _, _ = choose_cnn(self.STATE)
+                self.phi_STATE = self.h #tf.concat([first, second], axis=1)
+        elif Config.AGENT == 'ppo_rnd':
+            with tf.variable_scope("model", reuse=True) as scope:
+                """
+                RND loss
+                """
+                self.rnd_target = get_rnd_predictor(trainable=False)(self.h)
+                self.rnd_pred = get_rnd_predictor(trainable=True)(self.h)
 
-            
+                self.rnd_diff = tf.square(tf.stop_gradient(self.rnd_target) - self.rnd_pred)
+                self.rnd_diff = tf.reduce_mean(self.rnd_diff,1)
+
+        if Config.AGENT != 'ppo_diayn':
             with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
                 if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
                     self.pd_train = []
@@ -210,12 +211,14 @@ class CnnPolicy(object):
                     self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
                 else:
                     self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
-                self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0] # PPO+RND only
+                if Config.AGENT == 'ppo_rnd':
+                    self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0] # PPO+RND only
+                    self.vf_i_run = self.vf_i_train
 
                 # Plain Dropout version: Only fast updates / stochastic latent for VIB
                 self.pd_run = self.pd_train
                 self.vf_run = self.vf_train
-                self.vf_i_run = self.vf_i_train
+                
 
                 # For Dropout: Always change layer, so slow layer is never used
                 self.run_dropout_assign_ops = []
@@ -225,15 +228,15 @@ class CnnPolicy(object):
             neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
             self.initial_state = None
 
-        def step(ob, update_frac, head_idx, one_hot_skill=None, *_args, **_kwargs):
+        def step(ob, update_frac, extra_args, one_hot_skill=None, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
             if Config.AGENT == 'ppo_rnd':
-                a, v,v_i, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], self.vf_i_run, neglogp0_run[head_idx]], {X: ob})
-                return a, v, v_i, self.initial_state, neglogp
+                a, v, v_i, r_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.rnd_diff], {X: ob})
+                return a, v, v_i, r_i, self.initial_state, neglogp
             elif  Config.AGENT == 'ppo_diayn':
-                a, v, neglogp, rep_vec = sess.run([a0_run, self.vf_run, neglogp0_run, self.h], {X: ob, Z: one_hot_skill})
-                return a, v, neglogp, rep_vec
+                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
+                return a, v, neglogp
             elif not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
@@ -267,7 +270,7 @@ class CnnPolicy(object):
         self.custom_train = custom_train
         self.encoder = choose_cnn
         self.REP_PROC = REP_PROC
-        self.Z = Z
+       # self.Z = Z
 
 
 def get_policy():
