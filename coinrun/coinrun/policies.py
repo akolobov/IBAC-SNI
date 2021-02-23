@@ -135,6 +135,13 @@ def get_rnd_predictor(trainable):
     h = tf.keras.Model(inputs, p)
     return h
 
+def get_latent_discriminator():
+	inputs = tf.keras.layers.Input((256, ))
+	p = tf.keras.layers.Dense(512,activation='relu')(inputs)
+	p2 = tf.keras.layers.Dense(Config.N_SKILLS)(p)
+	h = tf.keras.Model(inputs, p2)
+	return h
+
 
 class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
@@ -149,7 +156,8 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, nbatch)
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
-            #Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Skill')
+            Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
+            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
             # trajectories of length m, for N policy heads.
             self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
             self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,64,64,3])
@@ -164,15 +172,19 @@ class CnnPolicy(object):
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
 
         if Config.AGENT == 'ppo_diayn':
-            with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-                #self.h_skill = tf.concat([self.h, Z], axis=1)
-                self.pd_train = self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]
-                self.vf_train = fc(self.h, 'v', 1)[:, 0]
-                self.pd_run = self.pd_train
-                self.vf_run = self.vf_train
-            a0_run = self.pd_run.sample()
-            neglogp0_run = self.pd_train.neglogp(a0_run)
-            self.initial_state = None
+            # with tf.variable_scope("model", reuse=True) as scope:
+            """
+            DIAYN loss
+            """
+            self.discriminator = get_latent_discriminator()
+            self.discriminator_logits = self.discriminator(tf.stop_gradient(self.h))
+            self.discriminator_log_probs = tf.nn.log_softmax(self.discriminator_logits)
+            
+            self.skill_log_prob = tf.gather(self.discriminator_log_probs, Z_INT, axis=1)
+            
+            # condition on current skill
+            self.h = tf.concat([self.h, Z], axis=1)
+
         elif Config.AGENT == 'ppo' and Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
             # create phi(s') using the same encoder
             with tf.variable_scope("model", reuse=True) as scope:
@@ -185,6 +197,59 @@ class CnnPolicy(object):
 
                 # first, second, _, _ = choose_cnn(self.STATE)
                 self.phi_STATE = self.h #tf.concat([first, second], axis=1)
+
+
+                self_sup_loss_type = 'infoNCE' # infoNCE / BYOL 
+                # (m, n, 32, x)
+                phi_traj_nce = tf.transpose(tf.reshape(self.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,-1)),perm=[2,1,0,3])
+                
+                # z_seq: n_envs x n_heads x 512
+                z_seq = get_seq_encoder()(phi_traj_nce)
+                # z_anch: n_envs x 512
+                z_anch = get_anch_encoder()(phi_anch_nce)
+                
+                # n_loc x n_batch x n_batch
+                self.rep_loss = 0.
+                if self_sup_loss_type == 'infoNCE':
+                    outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (512)**0.5
+                    for i in range(Config.POLICY_NHEADS):
+                        mask = tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , self.LAB_NCE)
+                        mask_mul = tf.cast(tf.tile(tf.expand_dims(mask,-1),[1,1,Config.NUM_ENVS]),tf.float32)
+
+                        # n_batch x n_heads
+                        pos_scores = tf.transpose(tf.reduce_sum((mask_mul*outer_prod),2),(1,0))
+                        # n_batch x n_batch x n_heads
+                        neg_scores = tf.transpose(( (1.-mask_mul) * outer_prod) - (20 * mask_mul),(1,2,0))
+                        neg_scores = tf.reshape(neg_scores,(Config.NUM_ENVS,-1))
+                        mask_neg = tf.reshape((1.-mask_mul),(Config.NUM_ENVS, -1))
+                        neg_maxes = tf.reduce_max(neg_scores, 1, keepdims=True)
+                        # n_batch x 1
+                        neg_sumexp = tf.reduce_sum((mask_neg * tf.exp(neg_scores - neg_maxes)),1, keepdims=True)
+                        # n_batch x n_heads
+                        all_logsumexp = tf.log(tf.exp(pos_scores - neg_maxes) + neg_sumexp)
+                        pos_shiftexp = pos_scores - neg_maxes
+                        nce_scores = pos_shiftexp - all_logsumexp
+
+                        self.rep_loss = self.rep_loss +  1/Config.POLICY_NHEADS * tf.reduce_mean(nce_scores,1)
+
+                elif self_sup_loss_type == 'BYOL':
+                    # z_anch: n_envs x n_heads x 512
+                    z_anch = tf.tile(tf.reshape(z_anch,(Config.NUM_ENVS,1,-1)),tf.constant([1,Config.POLICY_NHEADS,1],tf.int32))
+                    for i in range(Config.POLICY_NHEADS):
+                        
+                        # pred_Z = get_predictor(1)(tf.reshape(phi_traj_nce[:,i],(-1,256))) # count_latent_factors(Config.ENVIRONMENT)
+                        # rep_loss += 1/Config.POLICY_NHEADS * tf.reduce_mean(input_tensor=tf.square(pred_Z - tf.cast(tf.reshape(LATENT_FACTORS[:,i,:,i],(-1,1)),tf.float32) ))
+                        
+                        # mask: n_envs x n_heads
+                        mask = tf.transpose(tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE))
+                        # p_seq and p_anch: n_pos_traj x 512
+                        p_seq = get_predictor(n_out=512)(tf.boolean_mask(z_seq,mask))
+                        p_anch = get_predictor(n_out=512)(tf.boolean_mask(z_anch,mask))
+
+                        z_seq_mask = tf.boolean_mask(z_seq,mask)
+                        z_anch_mask = tf.boolean_mask(z_anch,mask)
+                        
+                        rep_loss = rep_loss + 1/Config.POLICY_NHEADS * ( cos_loss(p_seq,  z_anch_mask) + cos_loss(p_anch, z_seq_mask) ) / 2. # already has - sign in cos_loss
         elif Config.AGENT == 'ppo_rnd':
             # with tf.variable_scope("model", reuse=True) as scope:
             """
@@ -197,54 +262,53 @@ class CnnPolicy(object):
             self.rnd_diff = tf.reduce_mean(self.rnd_diff,1)
             rnd_diff_no_grad = tf.stop_gradient(self.rnd_diff)
 
-        if Config.AGENT != 'ppo_diayn':
-            with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-                if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                    self.pd_train = []
-                    for i in range(Config.POLICY_NHEADS):
-                        with tf.compat.v1.variable_scope("head_"+str(i), reuse=tf.compat.v1.AUTO_REUSE):
-                            self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
-                else:
-                    with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
-                        self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
-                
-                if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                    self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
-                else:
-                    self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
-                if Config.AGENT == 'ppo_rnd':
-                    self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0] # PPO+RND only
-                    self.vf_i_run = self.vf_i_train
+        with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
+                self.pd_train = []
+                for i in range(Config.POLICY_NHEADS):
+                    with tf.compat.v1.variable_scope("head_"+str(i), reuse=tf.compat.v1.AUTO_REUSE):
+                        self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
+            else:
+                with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
+                    self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
+            
+            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
+                self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
+            else:
+                self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
+            if Config.AGENT == 'ppo_rnd' or Config.AGENT == 'ppo_diayn' or (Config.CUSTOM_REP_LOSS and Config.agent == 'ppo'):
+                self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0]
+                self.vf_i_run = self.vf_i_train
 
-                # Plain Dropout version: Only fast updates / stochastic latent for VIB
-                self.pd_run = self.pd_train
-                self.vf_run = self.vf_train
-                
+            # Plain Dropout version: Only fast updates / stochastic latent for VIB
+            self.pd_run = self.pd_train
+            self.vf_run = self.vf_train
+            
 
-                # For Dropout: Always change layer, so slow layer is never used
-                self.run_dropout_assign_ops = []
+            # For Dropout: Always change layer, so slow layer is never used
+            self.run_dropout_assign_ops = []
 
-            # Use the current head for classical PPO updates
-            a0_run = [self.pd_run[head_idx].sample() for head_idx in range(Config.POLICY_NHEADS)]
-            neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
-            self.initial_state = None
+        # Use the current head for classical PPO updates
+        a0_run = [self.pd_run[head_idx].sample() for head_idx in range(Config.POLICY_NHEADS)]
+        neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
+        self.initial_state = None
 
-        def step(ob, update_frac, extra_args, one_hot_skill=None, *_args, **_kwargs):
+        def step(ob, update_frac, skill_idx=None, one_hot_skill=None, *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
             if Config.AGENT == 'ppo_rnd':
-                a, v, v_i, r_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.rnd_diff], {X: ob})
+                a, v, v_i, r_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, self.rnd_diff, neglogp0_run[0]], {X: ob})
                 return a, v, v_i, r_i, self.initial_state, neglogp
-            elif  Config.AGENT == 'ppo_diayn':
-                a, v, neglogp = sess.run([a0_run, self.vf_run, neglogp0_run], {X: ob})
-                return a, v, neglogp
-            elif not Config.CUSTOM_REP_LOSS:
+            elif Config.AGENT == 'ppo_diayn':
+                a, v, v_i, neglogp, r_i  = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.skill_log_prob], {X: ob, Z_INT: skill_idx, Z: one_hot_skill})
+                return a, v, v_i, r_i, self.initial_state, neglogp
+            elif Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
                 return a, v, self.initial_state, neglogp
             else:
                 # a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
-                rets = sess.run(a0_run + self.vf_run + neglogp0_run, {X: ob})
+                rets = sess.run(a0_run + self.vf_run + neglogp0_run + [self.vf_i_run,], {X: ob})
                 a = rets[:Config.POLICY_NHEADS]
                 v = rets[Config.POLICY_NHEADS:2*Config.POLICY_NHEADS]
                 neglogp = rets[2*Config.POLICY_NHEADS:]
