@@ -76,15 +76,6 @@ def running_stats_fun(run_stats, buf, clip, clip_state):
       buf = np.clip(buf, -clip, clip)
     return buf
 
-def state_next_normalize(sample_size, running_stats_s_):
-    buffer_s_ = []
-    s = env.reset()  
-    for i in range(sample_size):
-        a = env.action_space.sample()
-        s_, r, done, _ = env.step(a)
-        buffer_s_.append(s_)    
-    running_stats_s_.update(np.array(buffer_s_))
-
 """
 END RND
 """
@@ -203,7 +194,7 @@ class Model(object):
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
 
         # in case we don't use rep loss
-        self.rep_loss = 0
+        rep_loss = 0
         A = train_model.pdtype.sample_placeholder([None])
         ADV = tf.compat.v1.placeholder(tf.float32, [None])
         ADV_2 = tf.compat.v1.placeholder(tf.float32, [None])
@@ -223,7 +214,7 @@ class Model(object):
         vf_loss = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1, vf_losses2))
 
         vpred_i = train_model.vf_i_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
-        vpredclipped_i = OLDVPRED_i + tf.clip_by_value(train_model.vf_i_train - OLDVPRED_i, - CLIPRANGE, CLIPRANGE)
+        vpredclipped_i = OLDVPRED_i + tf.clip_by_value(vpred_i - OLDVPRED_i, - CLIPRANGE, CLIPRANGE)
         vf_losses1_i = tf.square(vpred_i - R_i)
         vf_losses2_i = tf.square(vpredclipped_i - R_i)
         vf_loss_i = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1_i, vf_losses2_i))
@@ -260,8 +251,6 @@ class Model(object):
             approxkl_run = tf.constant(0.)
             clipfrac_run = tf.constant(0.)
 
-        
-        rep_loss = 0.5 * tf.reduce_mean(train_model.rnd_diff)
 
         params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
@@ -301,7 +290,9 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        loss = pg_loss - entropy*ent_coef + vf_loss*vf_coef + l2_loss*Config.L2_WEIGHT + beta*info_loss                 + rep_loss + vf_loss_i*vf_coef
+        rep_loss = 0.5 * tf.reduce_mean(train_model.rnd_diff)
+
+        loss = pg_loss - entropy*ent_coef + vf_loss*vf_coef + l2_loss*Config.L2_WEIGHT + beta*info_loss + (rep_loss + vf_loss_i*vf_coef)
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -310,8 +301,7 @@ class Model(object):
         
         self.opt = trainer
         grads_and_var = trainer.compute_gradients(loss, params)
-
-
+        # idx 40 = v_i/w_0
         
         
         grads, var = zip(*grads_and_var)
@@ -339,22 +329,14 @@ class Model(object):
             adv_std_i = np.std(advs_i, axis=0, keepdims=True)
             advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
 
-            if Config.CUSTOM_REP_LOSS:
-                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                        CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE_NCE:states_nce, train_model.ANCH_NCE:anchors_nce, train_model.LAB_NCE:labels_nce, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i}
-            else:
-                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i}
+            
+            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
             
-            if Config.CUSTOM_REP_LOSS:
-                return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, tot_norm, vf_loss_i, _train],
-                    td_map
-                )[:-1]
-            else:
-                return sess.run(
+            
+            return sess.run(
                     [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, vf_loss_i, _train],
                     td_map
                 )[:-1]
@@ -467,14 +449,10 @@ class Runner(AbstractEnvRunner):
         mb_infos = np.asarray(mb_infos, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[0]
-        last_values_i = self.model.value_i(self.obs, update_frac, self.states, self.dones)[0]
-        # RND
-        sess = tf.compat.v1.get_default_session()
-        # mb_rewards_i = np.zeros_like(mb_rewards)
+        last_values_i = self.model.value_i(self.obs, update_frac, self.states, self.dones)
         for t in range(self.nsteps):    
             mb_rewards_i[t] = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)       
-
-            mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, False)    
+            # mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, False)    
 
         # discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)
@@ -496,14 +474,14 @@ class Runner(AbstractEnvRunner):
             Intrinsic advantages
             """
             if t == self.nsteps - 1:
-                nextnonterminal = 1.0 - self.dones
-                nextvalues = last_values_i
+                nextnonterminal_i = 1.0 - self.dones
+                nextvalues_i = last_values_i
             else:
-                nextnonterminal = 1.0 - mb_dones[t+1]
-                nextvalues = mb_values_i[t+1]
+                nextnonterminal_i = 1.0 - mb_dones[t+1]
+                nextvalues_i = mb_values_i[t+1]
 
-            delta = mb_rewards_i[t] + self.gamma * nextvalues * nextnonterminal - mb_values_i[t]
-            mb_advs_i[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam_i
+            delta_i = mb_rewards_i[t] + self.gamma * nextvalues_i * nextnonterminal_i - mb_values_i[t]
+            mb_advs_i[t] = lastgaelam_i = delta_i + self.gamma * self.lam * nextnonterminal_i * lastgaelam_i
             
         mb_returns = mb_advs + mb_values
         mb_returns_i = mb_advs_i + mb_values_i

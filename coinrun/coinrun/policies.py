@@ -186,15 +186,16 @@ class CnnPolicy(object):
                 # first, second, _, _ = choose_cnn(self.STATE)
                 self.phi_STATE = self.h #tf.concat([first, second], axis=1)
         elif Config.AGENT == 'ppo_rnd':
-            with tf.variable_scope("model", reuse=True) as scope:
-                """
-                RND loss
-                """
-                self.rnd_target = get_rnd_predictor(trainable=False)(self.h)
-                self.rnd_pred = get_rnd_predictor(trainable=True)(self.h)
+            # with tf.variable_scope("model", reuse=True) as scope:
+            """
+            RND loss
+            """
+            self.rnd_target = get_rnd_predictor(trainable=False)(self.h)
+            self.rnd_pred = get_rnd_predictor(trainable=True)(self.h)
 
-                self.rnd_diff = tf.square(tf.stop_gradient(self.rnd_target) - self.rnd_pred)
-                self.rnd_diff = tf.reduce_mean(self.rnd_diff,1)
+            self.rnd_diff = tf.square(tf.stop_gradient(self.rnd_target) - self.rnd_pred)
+            self.rnd_diff = tf.reduce_mean(self.rnd_diff,1)
+            rnd_diff_no_grad = tf.stop_gradient(self.rnd_diff)
 
         if Config.AGENT != 'ppo_diayn':
             with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
