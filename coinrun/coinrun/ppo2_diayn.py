@@ -329,7 +329,7 @@ class Model(object):
             adv_std_i = np.std(advs_i, axis=0, keepdims=True)
             advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
 
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, SKILLS: skills}
+            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, SKILLS: skills, train_model.Z: skills}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -402,7 +402,7 @@ class Runner(AbstractEnvRunner):
         self.one_hot_skills[np.arange(a.size), a] = 1
 
 
-    def run(self, update_frac):
+    def run(self, update_frac, z):
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_rewards_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[],[]
         mb_states = []
@@ -413,9 +413,6 @@ class Runner(AbstractEnvRunner):
 
        # ensure reset env has same step counter as main env
         self.reset_env.current_env_steps_left = self.env.current_env_steps_left
-
-        # sample skill for current episode
-        z = np.random.randint(0, high=Config.N_SKILLS)
 
         # extract one-hot encoding for skill
         one_hot_skill = self.one_hot_skills[z, :]
@@ -462,8 +459,8 @@ class Runner(AbstractEnvRunner):
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_infos = np.asarray(mb_infos, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
-        last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[0]
-        last_values_i = self.model.value_i(self.obs, update_frac, self.states, self.dones)
+        last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
+        last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
         for t in range(self.nsteps):    
             mb_rewards_i[t] = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)       
             # mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, False)    
@@ -577,6 +574,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     if Config.RESTORE_STEP is not None:
         start_update = Config.RESTORE_STEP // nbatch
 
+    z_iter = 0
+    curr_z = np.random.randint(0, high=Config.N_SKILLS)
     tb_writer = TB_Writer(sess)
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
@@ -588,8 +587,15 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
+        if z_iter < Config.DIAYN_EPOCHS:
+            packed = runner.run(update_frac=update/nupdates, z=curr_z)
+            z_iter += 1
+        else:
+            # sample new skill for current episodes
+            curr_z = np.random.randint(0, high=Config.N_SKILLS)
+            packed = runner.run(update_frac=update/nupdates, z=curr_z)
+            z_iter = 0
 
-        packed = runner.run(update_frac=update/nupdates)
         obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos = packed
         skill = np.reshape(skill, (-1, Config.N_SKILLS))
         # reshape our augmented state vectors to match first dim of observation array

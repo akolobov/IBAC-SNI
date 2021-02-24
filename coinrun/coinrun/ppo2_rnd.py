@@ -165,17 +165,7 @@ def aug_w_acts(latents, nbatch):
 
 # prediction layer 
 
-def tanh_clip(x, clip_val=20.):
-    '''
-    soft clip values to the range [-clip_val, +clip_val]
-    Trick from AM-DIM
-    '''
-    if clip_val is not None:
-        # why not just clip_val * tanh(x), since tanh : R -> [-1, 1]
-        x_clip = clip_val * tf.math.tanh((1. / clip_val) * x)
-    else:
-        x_clip = x
-    return x_clip
+
 
 
 class Model(object):

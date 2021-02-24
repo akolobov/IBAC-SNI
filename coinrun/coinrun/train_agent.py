@@ -11,7 +11,7 @@ Our algo:
 python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss -n-heads 5 -m 10 -rep_lambda 1
 
 DIAYN:
-python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --rep_loss --agent ppo_diayn
+python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --rep_loss --agent ppo_diayn -diayneps 4
 --------------------------------------------------------------------------------------------------------------------------------
 To plot (local):
 tensorboard --logdir=results-procgen/tb_log/ --host localhost --port 8888

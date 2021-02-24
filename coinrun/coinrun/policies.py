@@ -142,6 +142,42 @@ def get_latent_discriminator():
 	h = tf.keras.Model(inputs, p2)
 	return h
 
+def get_seq_encoder():
+    inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,Config.REP_LOSS_M,256 ))
+    conv1x1 = tf.keras.layers.Conv2D(filters=256,kernel_size=(1,1),activation='relu')(inputs)
+    out = tf.keras.layers.Dense(512,activation='relu')(tf.reshape(conv1x1,(Config.NUM_ENVS*Config.POLICY_NHEADS,Config.REP_LOSS_M*256)))
+    # output should be (ne, N, x)
+    p = tf.reshape(out,(Config.NUM_ENVS, Config.POLICY_NHEADS,-1))
+    #x = tf.keras.layers.Dense(512, activation='relu', use_bias=False)(inputs)
+    #x = tf.keras.layers.BatchNormalization()(x)
+    # p = tf.keras.layers.Dense(271)(inputs)
+    h = tf.keras.Model(inputs, p)
+    return h
+
+def get_anch_encoder():
+    inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,256 ))
+    p = tf.keras.layers.Dense(512,activation='relu')(inputs)
+    h = tf.keras.Model(inputs, p)
+    return h
+
+def get_predictor(n_out=512):
+    inputs = tf.keras.layers.Input((512, ))
+    p = tf.keras.layers.Dense(512,activation='relu')(inputs)
+    p2 = tf.keras.layers.Dense(n_out)(p)
+    h = tf.keras.Model(inputs, p2)
+    return h
+
+def tanh_clip(x, clip_val=20.):
+    '''
+    soft clip values to the range [-clip_val, +clip_val]
+    Trick from AM-DIM
+    '''
+    if clip_val is not None:
+        # why not just clip_val * tanh(x), since tanh : R -> [-1, 1]
+        x_clip = clip_val * tf.math.tanh((1. / clip_val) * x)
+    else:
+        x_clip = x
+    return x_clip
 
 class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
@@ -154,7 +190,7 @@ class CnnPolicy(object):
             X = tf.compat.v1.placeholder(shape=(nbatch,) + ob_space.shape, dtype=np.float32, name='Ob')
             processed_x = X
         else:
-            X, processed_x = observation_input(ob_space, nbatch)
+            X, processed_x = observation_input(ob_space, None)
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
@@ -195,18 +231,18 @@ class CnnPolicy(object):
                 first, second, _, _ = choose_cnn(self.ANCH_NCE)
                 self.phi_anch_nce = tf.concat([first, second], axis=1)
 
-                # first, second, _, _ = choose_cnn(self.STATE)
-                self.phi_STATE = self.h #tf.concat([first, second], axis=1)
+                first, second, _, _ = choose_cnn(self.STATE)
+                self.phi_STATE = tf.concat([first, second], axis=1)
 
 
                 self_sup_loss_type = 'infoNCE' # infoNCE / BYOL 
                 # (m, n, 32, x)
-                phi_traj_nce = tf.transpose(tf.reshape(self.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,-1)),perm=[2,1,0,3])
+                self.phi_traj_nce = tf.transpose(tf.reshape(self.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,-1)),perm=[2,1,0,3])
                 
                 # z_seq: n_envs x n_heads x 512
-                z_seq = get_seq_encoder()(phi_traj_nce)
+                z_seq = get_seq_encoder()(self.phi_traj_nce)
                 # z_anch: n_envs x 512
-                z_anch = get_anch_encoder()(phi_anch_nce)
+                z_anch = get_anch_encoder()(self.phi_anch_nce)
                 
                 # n_loc x n_batch x n_batch
                 self.rep_loss = 0.
@@ -276,8 +312,11 @@ class CnnPolicy(object):
                 self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
             else:
                 self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
-            if Config.AGENT == 'ppo_rnd' or Config.AGENT == 'ppo_diayn' or (Config.CUSTOM_REP_LOSS and Config.agent == 'ppo'):
+            if Config.AGENT == 'ppo_rnd' or Config.AGENT == 'ppo_diayn':
                 self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0]
+                self.vf_i_run = self.vf_i_train
+            if  (Config.CUSTOM_REP_LOSS and Config.AGENT == 'ppo'):
+                self.vf_i_train = fc(self.phi_STATE, 'v_i', 1)[:, 0]
                 self.vf_i_run = self.vf_i_train
 
             # Plain Dropout version: Only fast updates / stochastic latent for VIB
@@ -293,7 +332,7 @@ class CnnPolicy(object):
         neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
         self.initial_state = None
 
-        def step(ob, update_frac, skill_idx=None, one_hot_skill=None, *_args, **_kwargs):
+        def step(ob, update_frac, skill_idx=None, one_hot_skill=None, nce_dict = {},  *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
             if Config.AGENT == 'ppo_rnd':
@@ -308,20 +347,35 @@ class CnnPolicy(object):
                 return a, v, self.initial_state, neglogp
             else:
                 # a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
-                rets = sess.run(a0_run + self.vf_run + neglogp0_run + [self.vf_i_run,], {X: ob})
+                td_map = {**nce_dict, **{X: ob}}
+                rets = sess.run(a0_run + self.vf_run + neglogp0_run + ([self.vf_i_run, self.rep_loss] if len(nce_dict) else []),td_map)
                 a = rets[:Config.POLICY_NHEADS]
                 v = rets[Config.POLICY_NHEADS:2*Config.POLICY_NHEADS]
-                neglogp = rets[2*Config.POLICY_NHEADS:]
-                return a, v, self.initial_state, neglogp
+                neglogp = rets[2*Config.POLICY_NHEADS:-2]
+                if len(nce_dict):
+                    v_i = rets[-2]
+                    r_i = rets[-1]
+                    return a, v, v_i, r_i, self.initial_state, neglogp
+                else:
+                    return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):
             return sess.run(self.h, {X: ob})
 
-        def value(ob, update_frac, *_args, **_kwargs):
-            return sess.run(self.vf_run, {X: ob})
+        def value(ob, update_frac, one_hot_skill=None, *_args, **_kwargs):
+            if Config.AGENT == 'ppo_diayn':
+                return sess.run(self.vf_run, {X: ob, Z: one_hot_skill})
+            else:
+                return sess.run(self.vf_run, {X: ob})
 
-        def value_i(ob, update_frac, *_args, **_kwargs): 
-            return sess.run(self.vf_i_run, {X: ob})
+        def value_i(ob, update_frac, one_hot_skill=None, *_args, **_kwargs):
+            if Config.AGENT == 'ppo_diayn':
+                return sess.run(self.vf_i_run, {X: ob, Z: one_hot_skill})
+            else:
+                 return sess.run(self.vf_i_run, {self.STATE: ob})
+
+        def nce_fw_pass(nce_dict):
+            return sess.run([self.vf_i_run,self.rep_loss],nce_dict)
 
         def custom_train(ob, rep_vecs):
             return sess.run([self.rep_loss], {X: ob, REP_PROC: rep_vecs})[0]
@@ -333,9 +387,10 @@ class CnnPolicy(object):
         self.value_i = value_i
         self.rep_vec = rep_vec
         self.custom_train = custom_train
+        self.nce_fw_pass = nce_fw_pass
         self.encoder = choose_cnn
         self.REP_PROC = REP_PROC
-       # self.Z = Z
+        self.Z = Z
 
 
 def get_policy():

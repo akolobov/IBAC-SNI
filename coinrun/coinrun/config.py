@@ -69,6 +69,10 @@ class ConfigSingle(object):
         # total number of skills that can be sampled for DIAYN
         type_keys.append(('n_skills', 'n_skills', int, 5))
 
+        # Number of epochs before we switch skills for diayn
+        type_keys.append(('diayneps', 'diayn_epochs', int, 2))
+
+
         # The number of the GPU to be used (default is zero which should be the base GPU)
         type_keys.append(('gpu', 'num_gpus', int, 0))
 
