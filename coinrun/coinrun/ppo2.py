@@ -497,6 +497,7 @@ class Runner(AbstractEnvRunner):
         return states_nce, rewards_nce, dones_nce, infos_nce, labels, np.array(v_i), np.array(r_i)
 
     def run(self, update_frac):
+        print('Using head %d'%self.model.head_idx_current_batch)
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[]
         mb_states = []
@@ -707,6 +708,8 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     if Config.RESTORE_STEP is not None:
         start_update = Config.RESTORE_STEP // nbatch
 
+    z_iter = 0
+    curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
     tb_writer = TB_Writer(sess)
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
@@ -718,6 +721,13 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
+        if z_iter < 4: # 4 epochs / skill
+            z_iter += 1
+        else:
+            # sample new skill for current episodes
+            curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
+            model.head_idx_current_batch = curr_z
+            z_iter = 0
 
         packed = runner.run(update_frac=update/nupdates)
         obs, returns, masks, actions, values, neglogpacs, infos, values_i, returns_i, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, epinfos = packed

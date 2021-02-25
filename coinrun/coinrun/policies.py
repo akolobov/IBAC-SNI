@@ -350,13 +350,8 @@ class CnnPolicy(object):
                 rets = sess.run(a0_run + self.vf_run + neglogp0_run + ([self.vf_i_run, self.rep_loss] if len(nce_dict) else []),td_map)
                 a = rets[:Config.POLICY_NHEADS]
                 v = rets[Config.POLICY_NHEADS:2*Config.POLICY_NHEADS]
-                neglogp = rets[2*Config.POLICY_NHEADS:-2]
-                if len(nce_dict):
-                    v_i = rets[-2]
-                    r_i = rets[-1]
-                    return a, v, v_i, r_i, self.initial_state, neglogp
-                else:
-                    return a, v, self.initial_state, neglogp
+                neglogp = rets[2*Config.POLICY_NHEADS:]
+                return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):
             return sess.run(self.h, {X: ob})

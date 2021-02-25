@@ -24,7 +24,7 @@ To launch on Dilbert:
 
 conda activate dilbert
 cd ~/jobs/dilbert/rl_nexus/
-python jobs_launcher.py --env plunder coinrun caveflyer leaper jumper maze heist climber ninja --nheads 5 --m 5 --rep_lambda 1
+python jobs_launcher.py --env coinrun caveflyer leaper jumper maze heist climber ninja --nheads 5 --m 5 --rep_lambda 1
 bash extract_and_plot.sh
 """
 
