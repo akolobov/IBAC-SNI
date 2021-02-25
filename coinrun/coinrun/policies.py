@@ -145,24 +145,21 @@ def get_latent_discriminator():
 def get_seq_encoder():
     inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,Config.REP_LOSS_M,256 ))
     conv1x1 = tf.keras.layers.Conv2D(filters=256,kernel_size=(1,1),activation='relu')(inputs)
-    out = tf.keras.layers.Dense(512,activation='relu')(tf.reshape(conv1x1,(Config.NUM_ENVS*Config.POLICY_NHEADS,Config.REP_LOSS_M*256)))
+    out = tf.keras.layers.Dense(256,activation='relu')(tf.reshape(conv1x1,(-1,Config.REP_LOSS_M*256)))
     # output should be (ne, N, x)
-    p = tf.reshape(out,(Config.NUM_ENVS, Config.POLICY_NHEADS,-1))
-    #x = tf.keras.layers.Dense(512, activation='relu', use_bias=False)(inputs)
-    #x = tf.keras.layers.BatchNormalization()(x)
-    # p = tf.keras.layers.Dense(271)(inputs)
+    p = tf.reshape(out,(-1, Config.POLICY_NHEADS,256))
     h = tf.keras.Model(inputs, p)
     return h
 
 def get_anch_encoder():
     inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,256 ))
-    p = tf.keras.layers.Dense(512,activation='relu')(inputs)
+    p = tf.keras.layers.Dense(256,activation='relu')(inputs)
     h = tf.keras.Model(inputs, p)
     return h
 
-def get_predictor(n_out=512):
-    inputs = tf.keras.layers.Input((512, ))
-    p = tf.keras.layers.Dense(512,activation='relu')(inputs)
+def get_predictor(n_out=256):
+    inputs = tf.keras.layers.Input((256, ))
+    p = tf.keras.layers.Dense(256,activation='relu')(inputs)
     p2 = tf.keras.layers.Dense(n_out)(p)
     h = tf.keras.Model(inputs, p2)
     return h
@@ -196,10 +193,10 @@ class CnnPolicy(object):
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
             # trajectories of length m, for N policy heads.
             self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
-            self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,64,64,3])
-            self.ANCH_NCE = tf.compat.v1.placeholder(tf.float32, [Config.NUM_ENVS,64,64,3])
+            self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,None,64,64,3])
+            self.ANCH_NCE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
             # labels of Q value quantile bins
-            self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,Config.NUM_ENVS])
+            self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
         with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
@@ -237,7 +234,7 @@ class CnnPolicy(object):
 
                 self_sup_loss_type = 'infoNCE' # infoNCE / BYOL 
                 # (m, n, 32, x)
-                self.phi_traj_nce = tf.transpose(tf.reshape(self.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,-1)),perm=[2,1,0,3])
+                self.phi_traj_nce = tf.transpose(tf.reshape(self.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,-1,256)),perm=[2,1,0,3])
                 
                 # z_seq: n_envs x n_heads x 512
                 z_seq = get_seq_encoder()(self.phi_traj_nce)
@@ -247,20 +244,22 @@ class CnnPolicy(object):
                 # n_loc x n_batch x n_batch
                 self.rep_loss = 0.
                 if self_sup_loss_type == 'infoNCE':
-                    outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (512)**0.5
+                    outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (256)**0.5
                     for i in range(Config.POLICY_NHEADS):
-                        mask = tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , self.LAB_NCE)
-                        mask_mul = tf.cast(tf.tile(tf.expand_dims(mask,-1),[1,1,Config.NUM_ENVS]),tf.float32)
-
+                        filter_ = tf.cast(tf.fill(tf.shape(self.LAB_NCE), i),tf.float32)
+                        mask = tf.math.equal(filter_ , self.LAB_NCE)
+                        mask_mul = tf.cast(tf.tile(tf.expand_dims(mask,-1),[1,1,tf.shape(z_anch)[0]]),tf.float32)
+                        
                         # n_batch x n_heads
-                        pos_scores = tf.transpose(tf.reduce_sum((mask_mul*outer_prod),2),(1,0))
+                        pos_scores = tf.transpose(tf.reduce_mean((mask_mul*outer_prod),2),(1,0))
                         # n_batch x n_batch x n_heads
                         neg_scores = tf.transpose(( (1.-mask_mul) * outer_prod) - (20 * mask_mul),(1,2,0))
-                        neg_scores = tf.reshape(neg_scores,(Config.NUM_ENVS,-1))
-                        mask_neg = tf.reshape((1.-mask_mul),(Config.NUM_ENVS, -1))
+                        shape_neg = tf.shape(neg_scores)
+                        neg_scores = tf.reshape(neg_scores,(shape_neg[0],shape_neg[1]*shape_neg[2]))
+                        mask_neg = tf.reshape((1.-mask_mul),(shape_neg[0],shape_neg[1]*shape_neg[2]))
                         neg_maxes = tf.reduce_max(neg_scores, 1, keepdims=True)
                         # n_batch x 1
-                        neg_sumexp = tf.reduce_sum((mask_neg * tf.exp(neg_scores - neg_maxes)),1, keepdims=True)
+                        neg_sumexp = tf.reduce_mean((mask_neg * tf.exp(neg_scores - neg_maxes)),1, keepdims=True)
                         # n_batch x n_heads
                         all_logsumexp = tf.log(tf.exp(pos_scores - neg_maxes) + neg_sumexp)
                         pos_shiftexp = pos_scores - neg_maxes
@@ -372,7 +371,7 @@ class CnnPolicy(object):
             if Config.AGENT == 'ppo_diayn':
                 return sess.run(self.vf_i_run, {X: ob, Z: one_hot_skill})
             else:
-                 return sess.run(self.vf_i_run, {self.STATE: ob})
+                 return sess.run(self.vf_i_run, {self.STATE: ob, X:ob})
 
         def nce_fw_pass(nce_dict):
             return sess.run([self.vf_i_run,self.rep_loss],nce_dict)
