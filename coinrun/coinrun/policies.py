@@ -303,6 +303,8 @@ class CnnPolicy(object):
                 for i in range(Config.POLICY_NHEADS):
                     with tf.compat.v1.variable_scope("head_"+str(i), reuse=tf.compat.v1.AUTO_REUSE):
                         self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
+                with tf.compat.v1.variable_scope("head_i", reuse=tf.compat.v1.AUTO_REUSE):
+                    self.pd_train_i = self.pdtype.pdfromlatent(self.phi_STATE, init_scale=0.01)[0]
             else:
                 with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
                     self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
