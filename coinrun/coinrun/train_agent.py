@@ -12,6 +12,11 @@ python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --
 
 DIAYN:
 python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --agent ppo_diayn -diayneps 4 -n_skills 5
+
+# to change the distribution mode of the first and second phase:
+-phase1 exploration -phase2 hard
+-phase1 hard -phase2 exploration
+# options are either 'easy', 'hard', or 'exploration'
 --------------------------------------------------------------------------------------------------------------------------------
 To plot (local):
 tensorboard --logdir=results-procgen/tb_log/ --host localhost --port 8888
@@ -204,17 +209,23 @@ class FakeEnv:
 
 # helper function to make env
 def make_env(steps_per_env):
-    baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="exploration")
-    gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="exploration")
-
-    baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="exploration")
-    gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode="exploration")
+    if Config.FIRST_PHASE == 'exploration':
+        baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+        gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+    else:
+        baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+        gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+    if Config.SECOND_PHASE == 'exploration':
+        baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+        gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+    else:
+        baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+        gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
     
     venv_train = FakeEnv(gym3_env_train, baseline_vec_train)
     venv_train = VecExtractDictObs(venv_train, "rgb")
     venv_adapt = FakeEnv(gym3_env_adapt, baseline_vec_adapt)   
-    venv_adapt = VecExtractDictObs(venv_adapt, "rgb") 
-
+    venv_adapt = VecExtractDictObs(venv_adapt, "rgb")
     venv_train = VecMonitor(
         venv=venv_train, filename=None, keep_buf=100,
     )
@@ -263,7 +274,6 @@ def main():
     #print (env)
 
     print (Config.ENVIRONMENT)
-    
     venv = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
 
     

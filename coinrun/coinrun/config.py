@@ -72,6 +72,11 @@ class ConfigSingle(object):
         # Number of epochs before we switch skills for diayn
         type_keys.append(('diayneps', 'diayn_epochs', int, 2))
 
+        # Distribution mode for first phase of training
+        type_keys.append(('phase1', 'first_phase', str, 'hard'))
+
+        # Distribution mode for second phase of training
+        type_keys.append(('phase2', 'second_phase', str, 'exploration'))
 
         # The number of the GPU to be used (default is zero which should be the base GPU)
         type_keys.append(('gpu', 'num_gpus', int, 0))
