@@ -230,22 +230,25 @@ class CnnPolicy(object):
 
                 first, second, _, _ = choose_cnn(self.STATE)
                 self.phi_STATE = tf.concat([first, second], axis=1)
-
+                # m: length of NCE rollout (sub-traj), n_heads: number of heads, n_rkhs: latent dim (256 usually)
 
                 self_sup_loss_type = 'infoNCE' # infoNCE / BYOL 
-                # (m, n, 32, x)
+                # (m, n_heads, n_batch, n_rkhs)
                 self.phi_traj_nce = tf.transpose(tf.reshape(self.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,-1,256)),perm=[2,1,0,3])
                 
-                # z_seq: n_envs x n_heads x 512
+                # z_seq: n_batch x n_heads x n_rkhs. Global representation of z_{t+1:t+m}^k= f( phi(s_t+1),..,phi(s_t+m) ) for head k. Uses 1x1 Conv2D then MLP on flattened features of size m*256x256
                 z_seq = get_seq_encoder()(self.phi_traj_nce)
-                # z_anch: n_envs x 512
+                # z_anch: n_batch x n_rkhs. Global representation of z_t^k=h( phi(s_t) ) for head k by passing into 256x256 MLP "h".
                 z_anch = get_anch_encoder()(self.phi_anch_nce)
                 
-                # n_loc x n_batch x n_batch
                 self.rep_loss = 0.
                 if self_sup_loss_type == 'infoNCE':
+                    # outer_prod: n_loc x n_batch x n_batch
+                    # Use <z_t^k,z_{t+1:t+m}^k> as positives, 
+                    #     <z_t^k,z_{t+1:t+m}^k'> for k!=k' as negatives
                     outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (256)**0.5
                     for i in range(Config.POLICY_NHEADS):
+                        # Mask out the labels for the respective heads. mask=1 if samples from same head, 0 otherwise
                         filter_ = tf.cast(tf.fill(tf.shape(self.LAB_NCE), i),tf.float32)
                         mask = tf.math.equal(filter_ , self.LAB_NCE)
                         mask_mul = tf.cast(tf.tile(tf.expand_dims(mask,-1),[1,1,tf.shape(z_anch)[0]]),tf.float32)

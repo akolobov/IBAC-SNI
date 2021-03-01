@@ -330,7 +330,7 @@ class Model(object):
         info_loss = info_loss[0]
 
         if Config.REP_LOSS_WEIGHT > 0:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + (-1*tf.reduce_mean(train_model.rep_loss)*Config.REP_LOSS_WEIGHT) + vf_loss_i * vf_coef + pg_loss_i
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + (-1*tf.reduce_mean(train_model.rep_loss)*Config.REP_LOSS_WEIGHT) + vf_loss_i * vf_coef + pg_loss_i 
         else:
             loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
 
@@ -550,6 +550,9 @@ class Runner(AbstractEnvRunner):
 
                     states_nce, actions_nce, neglogps_nce, rewards_nce, dones_nce, infos_nce, labels_nce, rewards_i, values_i = self.get_NCE_samples(s_0, self.reset_env, anchors_nce, self.dones)
                     
+                    # rewards_i = -np.log(1+rewards_i) # as per RE3
+                    rewards_i = -rewards_i
+
                     mb_states_nce.append(states_nce)
                     mb_actions_nce.append(actions_nce)
                     mb_neglogps_nce.append(neglogps_nce)
@@ -739,7 +742,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         start_update = Config.RESTORE_STEP // nbatch
 
     z_iter = 0
-    curr_z = 0 #np.random.randint(0, high=Config.POLICY_NHEADS)
+    curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
     tb_writer = TB_Writer(sess)
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
@@ -751,7 +754,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
-        # if z_iter < 4: # 4 epochs / skill
+        # if z_iter < 4: # 8 epochs / skill
         #     z_iter += 1
         # else:
         #     # sample new skill for current episodes
