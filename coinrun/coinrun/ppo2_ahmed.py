@@ -203,7 +203,6 @@ class Model(object):
                 nsteps, ent_coef, vf_coef, max_grad_norm):
         self.max_grad_norm = max_grad_norm
         self.head_idx_current_batch = 0
-        self.critic_idx_current_batch = 0
         sess = tf.compat.v1.get_default_session()
 
         self.running_stats_s = RunningStats()
@@ -245,13 +244,13 @@ class Model(object):
         OLDVPRED = tf.compat.v1.placeholder(tf.float32, [None],name='OLDVPRED')
         vpred = train_model.vf_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
         if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-            vpred = vpred[self.critic_idx_current_batch]
+            vpred = vpred[self.head_idx_current_batch]
         vpredclipped = OLDVPRED + tf.clip_by_value(vpred - OLDVPRED, - CLIPRANGE, CLIPRANGE)
         vf_losses1 = tf.square(vpred - R)
         vf_losses2 = tf.square(vpredclipped - R)
         vf_loss = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1, vf_losses2))
 
-        neglogpac_train = train_model.pd_train[0].neglogp(A)
+        neglogpac_train = train_model.pd_train[self.head_idx_current_batch].neglogp(A)
         ratio_train = tf.exp(OLDNEGLOGPAC - neglogpac_train)
         pg_losses_train = -ADV * ratio_train
         pg_losses2_train = -ADV * tf.clip_by_value(ratio_train, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
@@ -265,8 +264,6 @@ class Model(object):
             pg_losses_train_i = -ADV_i * ratio_train_i
             pg_losses2_train_i = -ADV_i * tf.clip_by_value(ratio_train_i, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
             pg_loss_i = tf.reduce_mean(input_tensor=tf.maximum(pg_losses_train_i, pg_losses2_train_i))
-        else:
-            pg_loss_i = tf.constant(0.,dtype=tf.float32)
 
         if Config.BETA >= 0:
             entropy = tf.reduce_mean(input_tensor=train_model.pd_train[0]._components_distribution.entropy())
@@ -364,7 +361,7 @@ class Model(object):
         
         
         def train(lr, cliprange, obs, returns, masks, actions, infos, values, neglogpacs, values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce, states=None):
-            values = values[:,self.critic_idx_current_batch] if Config.CUSTOM_REP_LOSS else values
+            values = values[:,self.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else values
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
@@ -481,7 +478,7 @@ class Runner(AbstractEnvRunner):
             for m in range(Config.REP_LOSS_M):
                 actions, values, _, neglogps = self.model.step(obs, 1)
                 actions = actions[k]
-                values = values[self.model.critic_idx_current_batch]
+                values = values[k]
                 neglogps = neglogps[k]
                 obs, reward, done, info = env.step(actions)
                 state_nce.append(obs)
@@ -618,7 +615,7 @@ class Runner(AbstractEnvRunner):
             mb_infos_nce = np.zeros_like(mb_dones_nce)
         mb_labels_nce = np.asarray(mb_labels_nce, dtype=np.float32).transpose(0,2,1)
 
-        last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[self.model.critic_idx_current_batch] #use first critic
+        last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[self.model.head_idx_current_batch] #use first critic
         last_values_i = self.model.train_model.value_i(self.obs, update_frac, self.states, self.dones)
 
         if Config.CUSTOM_REP_LOSS:
@@ -638,10 +635,10 @@ class Runner(AbstractEnvRunner):
                 nextvalues = last_values
             else:
                 nextnonterminal = 1.0 - mb_dones[t+1]
-                nextvalues = mb_values[t+1][self.model.critic_idx_current_batch] if Config.CUSTOM_REP_LOSS else mb_values[t+1]
+                nextvalues = mb_values[t+1][self.model.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else mb_values[t+1]
                 
             if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t][self.model.critic_idx_current_batch]
+                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t][self.model.head_idx_current_batch]
             else:
                 delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
 
@@ -662,7 +659,7 @@ class Runner(AbstractEnvRunner):
                 mb_advs_i[t] = lastgaelam_i = delta_i + self.gamma * self.lam * nextnonterminal_i * lastgaelam_i
         if Config.CUSTOM_REP_LOSS:
             mb_returns_i = mb_advs_i + mb_values_i
-            mb_returns = mb_advs + mb_values[:,self.model.critic_idx_current_batch] # use first critic
+            mb_returns = mb_advs + mb_values[:,self.model.head_idx_current_batch] # use first critic
         else:
             mb_returns = mb_advs + mb_values
             

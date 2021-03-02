@@ -15,14 +15,14 @@ from coinrun.config import Config
 
 from coinrun.config import Config
 
-def impala_cnn(images, depths=[16, 32, 32]):
+def impala_cnn(images, depths=[16, 32, 32], prefix=""):
     use_batch_norm = Config.USE_BATCH_NORM == 1
     slow_dropout_assign_ops = []
     fast_dropout_assign_ops = []
 
     def dropout_openai(out, rate, name):
         out_shape = out.get_shape().as_list()
-        var_name = 'mask_{}'.format(name)
+        var_name = prefix+'mask_{}'.format(name)
         batch_seed_shape = out_shape[1:]
         batch_seed = tf.compat.v1.get_variable(var_name, shape=batch_seed_shape, initializer=tf.compat.v1.random_uniform_initializer(minval=0, maxval=1), trainable=False)
         batch_seed_assign = tf.compat.v1.assign(batch_seed, tf.random.uniform(batch_seed_shape, minval=0, maxval=1))
@@ -33,7 +33,7 @@ def impala_cnn(images, depths=[16, 32, 32]):
         return out, dout_assign_ops
 
     def conv_layer(out, depth, i):
-        with tf.compat.v1.variable_scope("conv{}".format(i)):
+        with tf.compat.v1.variable_scope("{}conv{}".format(prefix,i)):
             out = tf.compat.v1.layers.conv2d(out, depth, 3, padding='same')
             if use_batch_norm:
                 out = tf.keras.layers.BatchNormalization()(x)
@@ -60,62 +60,18 @@ def impala_cnn(images, depths=[16, 32, 32]):
         out = conv_sequence(out, depth, offsets)
     out = tf.compat.v1.layers.flatten(out)
     out = tf.nn.relu(out)
-
-    # if Config.BETA >= 0:
-    #     print("Creating VIB layer")
-    #     params = tf.layers.dense(out, 256*2)
-    #     mu, rho = params[:, :256], params[:, 256:]
-    #     encoding = ds.NormalWithSoftplusScale(mu, rho - 5.0)
-
-    #     with tf.compat.v1.variable_scope("info_loss"):
-    #         prior = ds.Normal(0.0, 1.0)
-    #         info_loss = tf.reduce_sum(tf.reduce_mean(
-    #             ds.kl_divergence(encoding, prior), 0)) / np.log(2)
-
-    #         # info_loss = tf.identity(info_loss, name="info_loss")
-    #         tf.add_to_collection("INFO_LOSS", info_loss)
-    #         # info_loss = tf.Print(info_loss, [info_loss])
-
-    #     with tf.control_dependencies([info_loss]):
-    #         batch_size = tf.shape(out)[0]
-    #         # batch_size = tf.Print(batch_size, [tf.shape(out)])
-    #         out = tf.reshape(
-    #                 encoding.sample(Config.NR_SAMPLES),
-    #                 shape=(batch_size * Config.NR_SAMPLES, 256))
-    #         out_mean = mu
-
-    # elif Config.BETA_L2A >= 0:
-    #     print("Creating L2A regularized layer")
-    #     out = tf.layers.dense(out, 256)
-    #     with tf.compat.v1.variable_scope("info_loss"):
-    #         info_loss = tf.reduce_sum(tf.reduce_mean(tf.square(out), 0))
-    #     tf.add_to_collection("INFO_LOSS_L2A", info_loss)
-
-    #     with tf.control_dependencies([info_loss]):
-    #         out = tf.identity(out)
-    #     out_mean = out
-    # elif Config.DROPOUT > 0:
-    #     print("Creating Dropout layer")
-    #     out_mean = tf.layers.dense(out, 256)
-    #     out = tf.nn.dropout(out_mean, rate=Config.DROPOUT)
-    # elif Config.DROPOUT > 0:
-    #     print("Creating Dropout layer")
-    #     latent = tf.layers.dense(out, 256)
-    #     out, fast_dropout_assign_ops = dropout_openai(latent, rate=Config.DROPOUT, name='fast')
-    #     out_mean, slow_dropout_assign_ops = dropout_openai(latent, rate=Config.DROPOUT, name='slow')
-    # else:
     core = out
-    with tf.compat.v1.variable_scope("dense0"):
+    with tf.compat.v1.variable_scope(prefix+"dense0"):
         act_invariant = tf.compat.v1.layers.dense(core, Config.NODES)
         act_invariant = tf.identity(act_invariant, name="action_invariant_layers")
         act_invariant = tf.nn.relu(act_invariant)
-    with tf.compat.v1.variable_scope("dense1"):
+    with tf.compat.v1.variable_scope(prefix+"dense1"):
         act_condit = tf.compat.v1.layers.dense(core, 256 - Config.NODES)
         act_condit = tf.identity(act_condit, name="action_conditioned_layers")
         act_condit = tf.nn.relu(act_condit)
     return act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assign_ops
 
-def choose_cnn(images):
+def choose_cnn(images,prefix=""):
     arch = Config.ARCHITECTURE
     scaled_images = tf.cast(images, tf.float32) / 255.
 
@@ -125,7 +81,7 @@ def choose_cnn(images):
     elif arch == 'impala':
         return impala_cnn(scaled_images)
     elif arch == 'impalalarge':
-        return impala_cnn(scaled_images, depths=[32, 64, 64, 64, 64])
+        return impala_cnn(scaled_images, depths=[32, 64, 64, 64, 64], prefix=prefix)
     else:
         assert(False)
 
@@ -197,7 +153,7 @@ class CnnPolicy(object):
             self.ANCH_NCE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
             # labels of Q value quantile bins
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
-        with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
@@ -220,10 +176,12 @@ class CnnPolicy(object):
 
         elif Config.AGENT == 'ppo' and Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
             # create phi(s') using the same encoder
-            with tf.variable_scope("model", reuse=True) as scope:
-                first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
-                # ( m * K * N, hidden_dim)
-                self.phi_traj_nce = tf.concat([first, second], axis=1)
+            for i in range(0, Config.POLICY_NHEADS):
+                with tf.variable_scope("model_%d"%(i), reuse=True) as scope:
+                    first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
+                    # ( m * K * N, hidden_dim)
+                    self.phi_traj_nce = tf.concat([first, second], axis=1)
+            with tf.variable_scope("model_0", reuse=True) as scope:
 
                 first, second, _, _ = choose_cnn(self.ANCH_NCE)
                 self.phi_anch_nce = tf.concat([first, second], axis=1)
@@ -300,7 +258,7 @@ class CnnPolicy(object):
             self.rnd_diff = tf.reduce_mean(self.rnd_diff,1)
             rnd_diff_no_grad = tf.stop_gradient(self.rnd_diff)
 
-        with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
             if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
                 self.pd_train = []
                 for i in range(Config.POLICY_NHEADS):
@@ -313,7 +271,8 @@ class CnnPolicy(object):
                     self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
             
             if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
+                # self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
+                self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
             else:
                 self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
             if Config.AGENT == 'ppo_rnd' or Config.AGENT == 'ppo_diayn':
@@ -353,9 +312,9 @@ class CnnPolicy(object):
                 # a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
                 td_map = {**nce_dict, **{X: ob}}
                 rets = sess.run(a0_run + self.vf_run + neglogp0_run + ([self.vf_i_run, self.rep_loss] if len(nce_dict) else []),td_map)
-                a = rets[:Config.POLICY_NHEADS]
-                v = rets[Config.POLICY_NHEADS:2*Config.POLICY_NHEADS]
-                neglogp = rets[2*Config.POLICY_NHEADS:]
+                a = rets[:len(self.pd_train)]
+                v = rets[len(self.pd_train):(len(self.pd_train)+len(self.vf_train))]
+                neglogp = rets[(len(self.pd_train)+len(self.vf_train)):]
                 return a, v, self.initial_state, neglogp
 
         def rep_vec(ob, *_args, **_kwargs):
