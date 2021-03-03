@@ -99,16 +99,22 @@ def get_latent_discriminator():
 	return h
 
 def get_seq_encoder():
-    inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,Config.REP_LOSS_M,256 ))
-    conv1x1 = tf.keras.layers.Conv2D(filters=256,kernel_size=(1,1),activation='relu')(inputs)
-    out = tf.keras.layers.Dense(256,activation='relu')(tf.reshape(conv1x1,(-1,Config.REP_LOSS_M*256)))
+    inputs = tf.keras.layers.Input((Config.REP_LOSS_M,320 ))
+    conv1x1 = tf.keras.layers.Conv1D(filters=512,kernel_size=(1),activation='relu')(inputs)
+    p = tf.keras.layers.Dense(256,activation='relu')(tf.reshape(conv1x1,(-1,Config.REP_LOSS_M*512)))
     # output should be (ne, N, x)
-    p = tf.reshape(out,(-1, Config.POLICY_NHEADS,256))
+    # p = tf.reshape(p,(-1,256))
+    h = tf.keras.Model(inputs, p)
+    return h
+
+def get_action_encoder(n_actions):
+    inputs = tf.keras.layers.Input((n_actions ))
+    p = tf.keras.layers.Dense(64,activation='relu')(inputs)
     h = tf.keras.Model(inputs, p)
     return h
 
 def get_anch_encoder():
-    inputs = tf.keras.layers.Input((Config.POLICY_NHEADS,256 ))
+    inputs = tf.keras.layers.Input((256 ))
     p = tf.keras.layers.Dense(256,activation='relu')(inputs)
     h = tf.keras.Model(inputs, p)
     return h
@@ -132,6 +138,12 @@ def tanh_clip(x, clip_val=20.):
         x_clip = x
     return x_clip
 
+def cos_loss(p, z):
+    z = tf.stop_gradient(z)
+    p = tf.math.l2_normalize(p, axis=1)
+    z = tf.math.l2_normalize(z, axis=1)
+    return -tf.reduce_sum(input_tensor=(p*z), axis=1)
+
 class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
         self.pdtype = make_pdtype(ac_space)
@@ -149,10 +161,11 @@ class CnnPolicy(object):
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
             # trajectories of length m, for N policy heads.
             self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
-            self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,None,64,64,3])
+            self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,1,None,64,64,3])
             self.ANCH_NCE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
             # labels of Q value quantile bins
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
+            self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
         with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
@@ -175,12 +188,26 @@ class CnnPolicy(object):
             self.h = tf.concat([self.h, Z], axis=1)
 
         elif Config.AGENT == 'ppo' and Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
-            # create phi(s') using the same encoder
+            # create phi(s') using the same encoder               
+            with tf.variable_scope("model_0", reuse=tf.AUTO_REUSE) as scope:
+                act_one_hot = tf.reshape(tf.one_hot(self.A_i[:,:,0],ac_space.n), (-1,ac_space.n))
+                phi_actions = tf.reshape(get_action_encoder(ac_space.n)( act_one_hot ), (-1,Config.REP_LOSS_M, 64) )
+            
+            self.phi_traj_nce = []
             for i in range(0, Config.POLICY_NHEADS):
-                with tf.variable_scope("model_%d"%(i), reuse=True) as scope:
+                with tf.variable_scope("model_%d"%(i), reuse=tf.AUTO_REUSE) as scope:
                     first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
                     # ( m * K * N, hidden_dim)
-                    self.phi_traj_nce = tf.concat([first, second], axis=1)
+                    h = tf.concat([first, second], axis=1)
+                    h = tf.transpose(tf.reshape( h ,(Config.REP_LOSS_M,-1,256)),perm=[1,0,2])
+                    if i > 0:
+                        h = tf.stop_gradient( h )     
+                    # concat actions with random state embeddings
+                    # s_a_phi: n_batch x m x (n_rkhs_s + n_rkhs_a)
+                    s_a_phi = tf.concat([h,phi_actions],2)
+                    z_seq = get_seq_encoder()( s_a_phi )
+                    self.phi_traj_nce.append( z_seq )
+            
             with tf.variable_scope("model_0", reuse=True) as scope:
 
                 first, second, _, _ = choose_cnn(self.ANCH_NCE)
@@ -190,12 +217,11 @@ class CnnPolicy(object):
                 self.phi_STATE = tf.concat([first, second], axis=1)
                 # m: length of NCE rollout (sub-traj), n_heads: number of heads, n_rkhs: latent dim (256 usually)
 
-                self_sup_loss_type = 'infoNCE' # infoNCE / BYOL 
+                self_sup_loss_type = 'BYOL' # infoNCE / BYOL 
                 # (m, n_heads, n_batch, n_rkhs)
-                self.phi_traj_nce = tf.transpose(tf.reshape(self.phi_traj_nce,(Config.REP_LOSS_M,Config.POLICY_NHEADS,-1,256)),perm=[2,1,0,3])
                 
                 # z_seq: n_batch x n_heads x n_rkhs. Global representation of z_{t+1:t+m}^k= f( phi(s_t+1),..,phi(s_t+m) ) for head k. Uses 1x1 Conv2D then MLP on flattened features of size m*256x256
-                z_seq = get_seq_encoder()(self.phi_traj_nce)
+                z_seq = tf.stack(self.phi_traj_nce)
                 # z_anch: n_batch x n_rkhs. Global representation of z_t^k=h( phi(s_t) ) for head k by passing into 256x256 MLP "h".
                 z_anch = get_anch_encoder()(self.phi_anch_nce)
                 
@@ -230,22 +256,26 @@ class CnnPolicy(object):
 
                 elif self_sup_loss_type == 'BYOL':
                     # z_anch: n_envs x n_heads x 512
-                    z_anch = tf.tile(tf.reshape(z_anch,(Config.NUM_ENVS,1,-1)),tf.constant([1,Config.POLICY_NHEADS,1],tf.int32))
-                    for i in range(Config.POLICY_NHEADS):
+
+                    p_seq_0 = get_predictor(n_out=256)(z_seq[0])
+                    p_anch = get_predictor(n_out=256)(z_anch)
+                    # z_anch = tf.tile(tf.reshape(z_anch,(Config.NUM_ENVS,1,-1)),tf.constant([1,Config.POLICY_NHEADS,1],tf.int32))
+                    for i in range(1,Config.POLICY_NHEADS):
                         
                         # pred_Z = get_predictor(1)(tf.reshape(phi_traj_nce[:,i],(-1,256))) # count_latent_factors(Config.ENVIRONMENT)
                         # rep_loss += 1/Config.POLICY_NHEADS * tf.reduce_mean(input_tensor=tf.square(pred_Z - tf.cast(tf.reshape(LATENT_FACTORS[:,i,:,i],(-1,1)),tf.float32) ))
                         
                         # mask: n_envs x n_heads
-                        mask = tf.transpose(tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE))
+                        # mask = tf.transpose(tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE))
                         # p_seq and p_anch: n_pos_traj x 512
-                        p_seq = get_predictor(n_out=512)(tf.boolean_mask(z_seq,mask))
-                        p_anch = get_predictor(n_out=512)(tf.boolean_mask(z_anch,mask))
+                        p_seq_i = get_predictor(n_out=256)(z_seq[i])
 
-                        z_seq_mask = tf.boolean_mask(z_seq,mask)
-                        z_anch_mask = tf.boolean_mask(z_anch,mask)
+                        # z_seq_mask = tf.boolean_mask(z_seq,mask)
+                        # z_anch_mask = tf.boolean_mask(z_anch,mask)
                         
-                        rep_loss = rep_loss + 1/Config.POLICY_NHEADS * ( cos_loss(p_seq,  z_anch_mask) + cos_loss(p_anch, z_seq_mask) ) / 2. # already has - sign in cos_loss
+                        byol_loss = ( cos_loss(p_seq_0,  z_seq[i]) + cos_loss(p_seq_i, z_seq[0]) ) / 2. + ( cos_loss(p_seq_i,  z_anch) + cos_loss(p_anch, z_seq[i]) ) / 2.
+                        self.rep_loss = self.rep_loss + 1/(Config.POLICY_NHEADS-1) * byol_loss
+                        
         elif Config.AGENT == 'ppo_rnd':
             # with tf.variable_scope("model", reuse=True) as scope:
             """
