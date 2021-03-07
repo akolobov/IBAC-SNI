@@ -97,6 +97,27 @@ def vidwrite(filename, images, framerate=60, vcodec='libx264'):
     process.stdin.close()
     process.wait()
 
+# k: k parameter for K-nn
+def sinkorn(scores, temp, k):
+    def remove_infs(x):
+        m = x[tf.math.is_inf(x)].max().item()
+        x[tf.math.is_inf(x)] = m
+        return x
+
+    Q = scores / temp
+    Q -= tf.math.reduce_max(Q)
+
+    Q = tf.transpose(tf.math.exp(Q))
+    Q /= tf.math.reduce_sum(Q)
+
+    r = tf.ones(Q.get_shape()[0]) / Q.get_shape()[0]
+    c = tf.ones(Q.get_shape()[1]) / Q.get_shape()[1]
+    for it in range(k):
+        u = tf.reduce_sum(Q, axis=1)
+        u = remove_infs(r / u)
+        Q *= tf.expand_dims(u, axis=1)
+        Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
+
 class MpiAdamOptimizer(tf.compat.v1.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
     def __init__(self, comm, **kwargs):
