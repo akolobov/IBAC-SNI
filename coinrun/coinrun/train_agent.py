@@ -29,8 +29,11 @@ To launch on Dilbert:
 
 conda activate dilbert
 cd ~/jobs/dilbert/rl_nexus/
-python jobs_launcher.py --env coinrun caveflyer leaper jumper maze heist climber ninja --nheads 5 --m 5 --rep_lambda 1
+python jobs_launcher.py --env  bigfish bossfight caveflyer chaser climber coinrun dodgeball fruitbot heist jumper leaper maze miner ninja plunder starpilot --nheads 5 --m 5 --rep_lambda 1 --phase1 easy --phase2 None
 bash extract_and_plot.sh
+
+exploration only envs: coinrun caveflyer leaper jumper maze heist climber ninja
+all envs: bigfish bossfight caveflyer chaser climber coinrun dodgeball fruitbot heist jumper leaper maze miner ninja plunder starpilot
 """
 
 import os
@@ -218,29 +221,36 @@ def make_env(steps_per_env):
     if Config.SECOND_PHASE == 'exploration':
         baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
         gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
-    else:
+    elif Config.SECOND_PHASE != "None":
         baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
         gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+    else:
+        baseline_vec_adapt = gym3_env_adapt = None
     
-
-
     venv_train = FakeEnv(gym3_env_train, baseline_vec_train)
     venv_train = VecExtractDictObs(venv_train, "rgb")
-    venv_adapt = FakeEnv(gym3_env_adapt, baseline_vec_adapt)   
-    venv_adapt = VecExtractDictObs(venv_adapt, "rgb")
+    if Config.SECOND_PHASE != "None":
+        venv_adapt = FakeEnv(gym3_env_adapt, baseline_vec_adapt)   
+        venv_adapt = VecExtractDictObs(venv_adapt, "rgb")
     venv_train = VecMonitor(
         venv=venv_train, filename=None, keep_buf=100,
     )
-    venv_adapt = VecMonitor(
-        venv=venv_adapt, filename=None, keep_buf=100,
-    )
+    if Config.SECOND_PHASE != "None":
+        venv_adapt = VecMonitor(
+            venv=venv_adapt, filename=None, keep_buf=100,
+        )
 
     venv_train = VecNormalize(venv=venv_train, ob=False)
     venv_train = wrappers.add_final_wrappers(venv_train)
-    venv_adapt = VecNormalize(venv=venv_adapt, ob=False)
-    venv_adapt = wrappers.add_final_wrappers(venv_adapt)
+    if Config.SECOND_PHASE != "None":
+        venv_adapt = VecNormalize(venv=venv_adapt, ob=False)
+        venv_adapt = wrappers.add_final_wrappers(venv_adapt)
 
-    venv = wrappers.DistributionShiftWrapperVec(env_list=[venv_train, venv_adapt], steps_per_env=steps_per_env) 
+        venv = wrappers.DistributionShiftWrapperVec(env_list=[venv_train, venv_adapt], steps_per_env=steps_per_env) 
+    else:
+        venv = venv_train
+        venv_adapt = venv_train = None
+        venv.current_env_steps_left = steps_per_env
 
     return venv, venv_train, venv_adapt
 

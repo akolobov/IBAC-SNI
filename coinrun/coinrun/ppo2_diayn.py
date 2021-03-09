@@ -402,7 +402,7 @@ class Runner(AbstractEnvRunner):
         self.one_hot_skills[np.arange(a.size), a] = 1
 
 
-    def run(self, update_frac, z):
+    def run(self, update_frac, z, pretrain=False):
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_rewards_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[],[]
         mb_states = []
@@ -461,6 +461,12 @@ class Runner(AbstractEnvRunner):
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
         last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
+
+        # if pretrain is true, ignore extrinsic reward
+        if pretrain:
+            mb_rewards = np.zeros_like(mb_rewards)
+            mb_values = np.zeros_line(mb_values)
+            last_values = np.zeros_like(last_values)
         for t in range(self.nsteps):    
             mb_rewards_i[t] = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)       
             # mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, False)    
@@ -514,7 +520,7 @@ def constfn(val):
     return f
 
 
-def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
+def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
              vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None):
@@ -595,6 +601,10 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             curr_z = np.random.randint(0, high=Config.N_SKILLS)
             packed = runner.run(update_frac=update/nupdates, z=curr_z)
             z_iter = 0
+
+        skill_log_probs = runner.model.act_model.discriminator_log_probs.eval()
+        skill_probs = np.exp(skill_log_probs)
+        print('skill probs', skill_probs)
 
         obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos = packed
         skill = np.reshape(skill, (-1, Config.N_SKILLS))

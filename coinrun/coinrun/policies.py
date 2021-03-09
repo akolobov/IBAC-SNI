@@ -192,7 +192,9 @@ class CnnPolicy(object):
             with tf.variable_scope("model_0", reuse=tf.AUTO_REUSE) as scope:
                 act_one_hot = tf.reshape(tf.one_hot(self.A_i[:,:,0],ac_space.n), (-1,ac_space.n))
                 phi_actions = tf.reshape(get_action_encoder(ac_space.n)( act_one_hot ), (-1,Config.REP_LOSS_M, 64) )
-            
+            params = tf.compat.v1.trainable_variables()
+            self.RL_enc_param_names = [p.name for p in params if 'model_0/' in p.name]
+            self.target_enc_param_names = []
             self.phi_traj_nce = []
             for i in range(0, Config.POLICY_NHEADS):
                 with tf.variable_scope("model_%d"%(i), reuse=tf.AUTO_REUSE) as scope:
@@ -202,6 +204,8 @@ class CnnPolicy(object):
                     h = tf.transpose(tf.reshape( h ,(Config.REP_LOSS_M,-1,256)),perm=[1,0,2])
                     if i > 0:
                         h = tf.stop_gradient( h )     
+                    params = tf.compat.v1.trainable_variables()
+                    self.target_enc_param_names.append([p.name for p in params if 'model_%d/'%i in p.name])
                     # concat actions with random state embeddings
                     # s_a_phi: n_batch x m x (n_rkhs_s + n_rkhs_a)
                     s_a_phi = tf.concat([h,phi_actions],2)

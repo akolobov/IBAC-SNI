@@ -117,6 +117,7 @@ def sinkorn(scores, temp, k):
         u = remove_infs(r / u)
         Q *= tf.expand_dims(u, axis=1)
         Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
+    Q = Q / tf.math.reduce_sum(Q)
 
 class MpiAdamOptimizer(tf.compat.v1.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""

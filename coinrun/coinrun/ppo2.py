@@ -76,34 +76,11 @@ def running_stats_fun(run_stats, buf, clip, clip_state):
       buf = np.clip(buf, -clip, clip)
     return buf
 
-"""
-Episode rollout
-"""
 
-def episode_rollouts(env,model,step,tb_writer):
-    eval_episodes = 10
-    episodes_not_done = eval_episodes
-    obs = env.reset()
-    
-    dones = np.array([0.]*Config.NUM_ENVS)
-    epinfos = []
-    while episodes_not_done:
-        actions, values, states, neglogpacs = model.step(obs, 0, None, dones)
-        if Config.CUSTOM_REP_LOSS:
-            actions = actions[0]
-        obs, rewards, dones, infos = env.step(actions) # take head 1
-        print(dones)
-        for info in infos:
-            maybeepinfo = info.get('episode')
-            if maybeepinfo: 
-                epinfos.append(maybeepinfo)
-                print(episodes_not_done)
-                episodes_not_done -= 1
-
-    rew_mean_10 = utils.process_ep_buf(epinfos, tb_writer=tb_writer, suffix='_eval', step=step)
-
-    return rew_mean_10
-    
+def soft_update(source_variables,target_variables,tau=1.0):
+    for (v_s, v_t) in zip(source_variables, target_variables):
+        v_t.shape.assert_is_compatible_with(v_s.shape)
+        v_t.assign((1 - tau) * v_t + tau * v_s)
 
 # helper function to turn numpy array into video file
 def vidwrite(filename, images, framerate=60, vcodec='libx264'):
@@ -242,7 +219,7 @@ class Model(object):
 
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
-
+        self.train_model = train_model
         # in case we don't use rep loss
         rep_loss = None
         # HEAD_IDX = tf.compat.v1.placeholder(tf.int32, [None])
@@ -812,6 +789,13 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
 
+        if Config.CUSTOM_REP_LOSS:
+            params = tf.compat.v1.trainable_variables()
+            source_params = [p for p in params if p.name in model.train_model.RL_enc_param_names]
+            for i in range(1,Config.POLICY_NHEADS):
+                target_i_params = [p for p in params if p.name in model.train_model.target_enc_param_names[i]]
+                soft_update(source_params,target_i_params,tau=0.95)
+                
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
         # if z_iter < 4: # 8 epochs / skill
