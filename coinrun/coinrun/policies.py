@@ -170,8 +170,13 @@ class CnnPolicy(object):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
-            # stack together action invariant & conditioned layers for full representation layer
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
+        if Config.AGENT == 'ppg':
+            X_pi, processed_x_pi = observation_input(ob_space, None)
+            with tf.compat.v1.variable_scope("model_pi", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(processed_x_pi)
+                self.h_pi =  tf.concat([act_condit, act_invariant], axis=1)
+                self.adv_pi = get_predictor(n_out=1)(self.h_pi)
 
         if Config.AGENT == 'ppo_diayn':
             # with tf.variable_scope("model", reuse=True) as scope:
@@ -190,6 +195,10 @@ class CnnPolicy(object):
         elif Config.AGENT == 'ppo' and Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
             # create phi(s') using the same encoder               
             with tf.variable_scope("model_0", reuse=tf.AUTO_REUSE) as scope:
+                first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
+                # ( m * K * N, hidden_dim)
+                h = tf.concat([first, second], axis=1)
+                latent_h = tf.transpose(tf.reshape( h ,(Config.REP_LOSS_M,-1,256)),perm=[1,0,2])
                 act_one_hot = tf.reshape(tf.one_hot(self.A_i[:,:,0],ac_space.n), (-1,ac_space.n))
                 phi_actions = tf.reshape(get_action_encoder(ac_space.n)( act_one_hot ), (-1,Config.REP_LOSS_M, 64) )
             params = tf.compat.v1.trainable_variables()
@@ -198,12 +207,10 @@ class CnnPolicy(object):
             self.phi_traj_nce = []
             for i in range(0, Config.POLICY_NHEADS):
                 with tf.variable_scope("model_%d"%(i), reuse=tf.AUTO_REUSE) as scope:
-                    first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
-                    # ( m * K * N, hidden_dim)
-                    h = tf.concat([first, second], axis=1)
-                    h = tf.transpose(tf.reshape( h ,(Config.REP_LOSS_M,-1,256)),perm=[1,0,2])
                     if i > 0:
-                        h = tf.stop_gradient( h )     
+                        h = tf.stop_gradient( latent_h )
+                    else:
+                        h = latent_h     
                     params = tf.compat.v1.trainable_variables()
                     self.target_enc_param_names.append([p.name for p in params if 'model_%d/'%i in p.name])
                     # concat actions with random state embeddings
@@ -300,6 +307,9 @@ class CnnPolicy(object):
                         self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
                 with tf.compat.v1.variable_scope("head_i", reuse=tf.compat.v1.AUTO_REUSE):
                     self.pd_train_i = self.pdtype.pdfromlatent(self.phi_STATE, init_scale=0.01)[0]
+            elif Config.AGENT == 'ppg':
+                with tf.compat.v1.variable_scope("head_pi", reuse=tf.compat.v1.AUTO_REUSE):
+                    self.pd_train = [self.pdtype.pdfromlatent(self.h_pi, init_scale=0.01)[0]]
             else:
                 with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
                     self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]

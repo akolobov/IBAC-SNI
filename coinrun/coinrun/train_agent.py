@@ -312,6 +312,8 @@ def main():
             from coinrun import ppo2_rnd as agent
         elif Config.AGENT == 'ppo_diayn':
             from coinrun import ppo2_diayn as agent
+        elif Config.AGENT == 'ppg':
+            from coinrun import ppo2_ppg as agent
         agent.learn(policy=policy,
                     env=venv,
                     eval_env=venv_eval,

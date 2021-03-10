@@ -36,52 +36,6 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 
 from random import choice
 
-"""
-Intrinsic advantage methods
-"""
-
-class RunningStats(object):
-    # https://github.com/ChuaCheowHuan/reinforcement_learning/blob/master/RND_PPO/RND_PPO_cont_ftr_nsn_mtCar_php.ipynb
-    def __init__(self, epsilon=1e-4, shape=()):
-        self.mean = np.zeros(shape, 'float64')
-        self.var = np.ones(shape, 'float64')
-        self.std = np.ones(shape, 'float64')
-        self.count = epsilon
-
-    def update(self, x):
-        batch_mean = np.mean(x, axis=0)
-        batch_var = np.var(x, axis=0)
-        batch_count = x.shape[0]
-        self.update_from_moments(batch_mean, batch_var, batch_count)
-
-    def update_from_moments(self, batch_mean, batch_var, batch_count):
-        delta = batch_mean - self.mean
-        
-        new_mean = self.mean + delta * batch_count / (self.count + batch_count)
-        m_a = self.var * self.count
-        m_b = batch_var * batch_count
-        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / (self.count + batch_count)
-        new_var = M2 / (self.count + batch_count)
-
-        self.mean = new_mean
-        self.var = new_var
-        self.std = np.maximum(np.sqrt(self.var), 1e-6)
-        #self.std = np.sqrt(np.maximum(self.var, 1e-2))                            
-        self.count = batch_count + self.count
-
-def running_stats_fun(run_stats, buf, clip, clip_state):
-    run_stats.update(np.array(buf))
-    buf = (np.array(buf) - run_stats.mean) / run_stats.std   
-    if clip_state == True:
-      buf = np.clip(buf, -clip, clip)
-    return buf
-
-
-def soft_update(source_variables,target_variables,tau=1.0):
-    for (v_s, v_t) in zip(source_variables, target_variables):
-        v_t.shape.assert_is_compatible_with(v_s.shape)
-        v_t.assign((1 - tau) * v_t + tau * v_s)
-
 # helper function to turn numpy array into video file
 def vidwrite(filename, images, framerate=60, vcodec='libx264'):
     if not isinstance(images, np.ndarray):
@@ -191,13 +145,14 @@ def get_predictor(n_out=512):
     h = tf.keras.Model(inputs, p2)
     return h
 
-
+# why 20. and not just 20? same for the 1. below
 def tanh_clip(x, clip_val=20.):
     '''
     soft clip values to the range [-clip_val, +clip_val]
     Trick from AM-DIM
     '''
     if clip_val is not None:
+        # why not just clip_val * tanh(x), since tanh : R -> [-1, 1]
         x_clip = clip_val * tf.math.tanh((1. / clip_val) * x)
     else:
         x_clip = x
@@ -209,49 +164,29 @@ class Model(object):
                 nsteps, ent_coef, vf_coef, max_grad_norm):
         self.max_grad_norm = max_grad_norm
         self.head_idx_current_batch = 0
-        self.critic_idx_current_batch = 0
         sess = tf.compat.v1.get_default_session()
-
-        self.running_stats_s = RunningStats()
-        self.running_stats_s_ = RunningStats()
-        self.running_stats_r = RunningStats()
-        self.running_stats_r_i = RunningStats()
 
         train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm)
         act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, max_grad_norm)
-        self.train_model = train_model
+
         # in case we don't use rep loss
         rep_loss = None
         # HEAD_IDX = tf.compat.v1.placeholder(tf.int32, [None])
         A = train_model.pdtype.sample_placeholder([None],name='A')
-        A_i = train_model.A_i
-        LATENT_FACTORS = train_model.pdtype.sample_placeholder([Config.REP_LOSS_M,Config.POLICY_NHEADS,None,count_latent_factors(Config.ENVIRONMENT)],name='LATENT_FACTORS')
+        LATENT_FACTORS = train_model.pdtype.sample_placeholder([Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,count_latent_factors(Config.ENVIRONMENT)],name='LATENT_FACTORS')
         ADV = tf.compat.v1.placeholder(tf.float32, [None],name='ADV')
         R = tf.compat.v1.placeholder(tf.float32, [None],name='R')
-        R_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,1,None],name='R_NCE')
+        R_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS],name='R_NCE')
         OLDNEGLOGPAC = tf.compat.v1.placeholder(tf.float32, [None],name='OLDNEGLOGPAC')
-        OLDNEGLOGPAC_i = tf.compat.v1.placeholder(tf.float32, [None],name='OLDNEGLOGPAC_i')
         LR = tf.compat.v1.placeholder(tf.float32, [],name='LR')
         CLIPRANGE = tf.compat.v1.placeholder(tf.float32, [],name='CLIPRANGE')
-
-        if Config.CUSTOM_REP_LOSS:
-            ADV_i= tf.compat.v1.placeholder(tf.float32, [None])
-            R_i = tf.compat.v1.placeholder(tf.float32, [None])
-            OLDVPRED_i = tf.compat.v1.placeholder(tf.float32, [None])
-            vpred_i = train_model.vf_i_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
-            vpredclipped_i = OLDVPRED_i + tf.clip_by_value(vpred_i - OLDVPRED_i, - CLIPRANGE, CLIPRANGE)
-            vf_losses1_i = tf.square(vpred_i - R_i)
-            vf_losses2_i = tf.square(vpredclipped_i - R_i)
-            vf_loss_i = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1_i, vf_losses2_i))
-
-            # ADV = ADV + ADV_i
 
         # TD loss for critic
         # VF loss
         OLDVPRED = tf.compat.v1.placeholder(tf.float32, [None],name='OLDVPRED')
         vpred = train_model.vf_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
         if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-            vpred = vpred[self.critic_idx_current_batch]
+            vpred = vpred[self.head_idx_current_batch]
         vpredclipped = OLDVPRED + tf.clip_by_value(vpred - OLDVPRED, - CLIPRANGE, CLIPRANGE)
         vf_losses1 = tf.square(vpred - R)
         vf_losses2 = tf.square(vpredclipped - R)
@@ -264,15 +199,6 @@ class Model(object):
         pg_loss = tf.reduce_mean(input_tensor=tf.maximum(pg_losses_train, pg_losses2_train))
         approxkl_train = .5 * tf.reduce_mean(input_tensor=tf.square(neglogpac_train - OLDNEGLOGPAC))
         clipfrac_train = tf.reduce_mean(input_tensor=tf.cast(tf.greater(tf.abs(ratio_train - 1.0), CLIPRANGE), dtype=tf.float32))
-
-        if Config.CUSTOM_REP_LOSS:
-            neglogpac_train_i = train_model.pd_train_i.neglogp(A_i[:,0,self.head_idx_current_batch])
-            ratio_train_i = tf.exp(OLDNEGLOGPAC_i - neglogpac_train_i)
-            pg_losses_train_i = -ADV_i * ratio_train_i
-            pg_losses2_train_i = -ADV_i * tf.clip_by_value(ratio_train_i, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
-            pg_loss_i = tf.reduce_mean(input_tensor=tf.maximum(pg_losses_train_i, pg_losses2_train_i))
-        else:
-            pg_loss_i = tf.constant(0.,dtype=tf.float32)
 
         if Config.BETA >= 0:
             entropy = tf.reduce_mean(input_tensor=train_model.pd_train[0]._components_distribution.entropy())
@@ -298,6 +224,8 @@ class Model(object):
             approxkl_run = tf.constant(0.)
             clipfrac_run = tf.constant(0.)
 
+        if Config.AGENT == 'ppg':
+            adv_pred = tf.reduce_mean(input_tensor=tf.square(ADV - train_model.adv_pi))
 
         params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
@@ -337,13 +265,10 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        if Config.CUSTOM_REP_LOSS:
-            rep_loss = tf.reduce_mean(train_model.rep_loss)
-
         if Config.REP_LOSS_WEIGHT > 0:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT+ vf_loss_i * vf_coef #+ pg_loss_i 
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT
         else:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
+            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + adv_pred * 0.25
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -370,27 +295,17 @@ class Model(object):
 
         
         
-        
-        def train(lr, cliprange, obs, returns, masks, actions, infos, values, neglogpacs, values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce, states=None):
-            values = values[:,self.critic_idx_current_batch] if Config.CUSTOM_REP_LOSS else values
+        def train(lr, cliprange, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, obs, returns, masks, actions, infos, values, neglogpacs, states=None):
+            values = values[:,self.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else values
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
-
-            if Config.CUSTOM_REP_LOSS:
-                advs_i = returns_i - values_i
-                adv_mean_i = np.mean(advs_i, axis=0, keepdims=True)
-                adv_std_i = np.std(advs_i, axis=0, keepdims=True)
-                advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
-                
-            if Config.CUSTOM_REP_LOSS:
             
+            if Config.CUSTOM_REP_LOSS:
                 td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
                         CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, 
-                        train_model.STATE_NCE:states_nce.transpose(1,2,0,3,4,5), train_model.ANCH_NCE:anchors_nce, train_model.LAB_NCE:labels_nce.transpose(1,0), R_NCE:rewards_nce.transpose(1,2,0), train_model.STATE:anchors_nce,
-                        train_model.A_i:actions_nce, OLDNEGLOGPAC_i:neglogps_nce[:,0,self.head_idx_current_batch],
-                        ADV_i:advs_i, OLDVPRED_i:values_i, R_i:returns_i
+                        train_model.STATE_NCE:states_nce, train_model.ANCH_NCE:anchors_nce, train_model.LAB_NCE:labels_nce, R_NCE:rewards_nce, LATENT_FACTORS:infos_nce
                         }
             else:
                 td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
@@ -398,17 +313,19 @@ class Model(object):
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
-            # import ipdb;ipdb.set_trace()
+            
             if Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
-                rets = sess.run( [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, vf_loss_i, pg_loss_i, tot_norm, _train],td_map)[:-1]
-                return rets
+                return sess.run(
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, tot_norm, _train],
+                    td_map
+                )[:-1]
             else:
                 return sess.run(
                     [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
                     td_map
                 )[:-1]
             
-        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'value_i_loss', 'policy_loss_i','gradient_norm']
+        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'gradient_norm']
 
         def save(save_path):
             ps = sess.run(params)
@@ -445,7 +362,6 @@ class Model(object):
 class Runner(AbstractEnvRunner):
     def __init__(self, *, env, eval_env, model, nsteps, gamma, lam):
         super().__init__(env=env, model=model, nsteps=nsteps)
-
         self.eval_obs = np.zeros((self.nenv,) + eval_env.observation_space.shape, dtype=eval_env.observation_space.dtype.name)
         self.eval_obs[:] = eval_env.reset()
         self.eval_dones = [False for _ in range(self.nenv)]
@@ -467,60 +383,45 @@ class Runner(AbstractEnvRunner):
             total_timesteps = int(25e6)
         elif Config.VERY_SHORT_TRAINING:
             total_timesteps = int(5e6)
-        self.reset_env = make_env(steps_per_env=total_timesteps//2)[0] # for _ in range(Config.POLICY_NHEADS)]
+        self.reset_env = make_env(steps_per_env=total_timesteps//2)[0]
         self.eval_env = eval_env
 
-    def get_NCE_samples(self, s_0, env,obs_0,done):
+    def get_NCE_samples(self, s_0, env,obs,done):
         states_nce = []
         rewards_nce = []
-        actions_nce = []
-        neglogps_nce = []
         dones_nce = []
         infos_nce = []
-        v_is = []
-        r_is = []
-        k = 0
-        obs = obs_0.copy()
+
         # for each policy head, collect m step rollouts
-        env.callmethod("set_state", s_0)
-        state_nce = []
-        action_nce = []
-        neglogp_nce = []
-        reward_nce = []
-        done_nce = []
-        info_nce = []
-        for m in range(Config.REP_LOSS_M):
-            actions, values, _, neglogps = self.model.step(obs, 1)
-            actions = actions[k]
-            values = values[self.model.critic_idx_current_batch]
-            neglogps = neglogps[k]
-            obs, reward, done, info = env.step(actions)
-            state_nce.append(obs)
-            # if m == Config.REP_LOSS_M-1: # direct model for remaining of trajectory
-            #     reward = reward + values
-            action_nce.append(actions)
-            neglogp_nce.append(neglogps)
-            reward_nce.append(reward)
-            done_nce.append(done)
-            info_nce.append([[float(v) for k,v in info_.items() if (k != 'episode') and (Config.ENVIRONMENT in k)] for info_ in info])
-        states_nce.append(state_nce)
-        actions_nce.append(action_nce)
-        neglogps_nce.append(neglogp_nce)
-        rewards_nce.append(reward_nce)
-        dones_nce.append(done_nce)
-        infos_nce.append(info_nce)
+        for k in range(Config.POLICY_NHEADS):
+            env.callmethod("set_state", s_0)
+            state_nce = []
+            reward_nce = []
+            done_nce = []
+            info_nce = []
+            for m in range(Config.REP_LOSS_M):
+                actions, values, _, _ = self.model.step(obs, 1, k, done)
+                actions = actions[k]
+                values = values[k]
+                obs, reward, done, info = env.step(actions)
+                state_nce.append(obs)
+                # if m == Config.REP_LOSS_M-1: # direct model for remaining of trajectory
+                #     reward = reward + values
+                reward_nce.append(reward)
+                done_nce.append(done)
+                info_nce.append([[float(v) for k,v in info_.items() if (k != 'episode') and (Config.ENVIRONMENT in k)] for info_ in info])
+            states_nce.append(state_nce)
+            rewards_nce.append(reward_nce)
+            dones_nce.append(done_nce)
+            infos_nce.append(info_nce)
 
         states_nce = np.transpose(np.array(states_nce),(1,0,2,3,4,5))
-        actions_nce = np.transpose(np.array(actions_nce),(2,1,0))
-        neglogps_nce = np.transpose(np.array(neglogps_nce),(1,0,2))
         rewards_nce = np.transpose(np.array(rewards_nce),(1,0,2))
         dones_nce = np.transpose(np.array(dones_nce),(1,0,2))
         infos_nce = np.transpose(np.array(infos_nce),(1,0,2,3))
         # each head learns on own samples
         self_labels = np.repeat(np.arange(0,Config.POLICY_NHEADS).reshape(-1,1),Config.NUM_ENVS,1)
         labels = self_labels
-        
-        v_i, r_i = self.model.train_model.nce_fw_pass(nce_dict={self.model.train_model.STATE_NCE:states_nce,self.model.train_model.ANCH_NCE:obs_0,self.model.train_model.LAB_NCE:labels,self.model.train_model.STATE:obs_0,self.model.train_model.A_i:actions_nce})
         # each head learns on quantiles of V
         # sum_rew = rewards_nce.sum(0)
         # quantiles = np.quantile(sum_rew,np.linspace(0,1,Config.POLICY_NHEADS+1))[1:]
@@ -530,77 +431,54 @@ class Runner(AbstractEnvRunner):
         # else:
         #     labels = np.digitize(sum_rew, bins=quantiles)
         
-        return states_nce, actions_nce, neglogps_nce, rewards_nce, dones_nce, infos_nce, labels, np.array(v_i), np.array(r_i)
+        return states_nce, rewards_nce, dones_nce, infos_nce, labels
 
     def run(self, update_frac):
-        # print('Using head %d'%self.model.head_idx_current_batch)
         # Here, we init the lists that will contain the mb of experiences
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[]
         mb_states = []
         epinfos = []
         eval_epinfos = []
 
-        mb_states_nce, mb_actions_nce, mb_neglogps_nce, mb_rewards_nce, mb_dones_nce, mb_infos_nce, mb_labels_nce, mb_rewards_i, mb_values_i, mb_anchors_nce = [], [], [], [], [], [], [], [], [], []
-
-        states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce = [],[],[],[],[]
-
-        # ensure reset env has same step counter as main env
+       # ensure reset env has same step counter as main env
         self.reset_env.current_env_steps_left = self.env.current_env_steps_left
         # For n in range number of steps
-        self.nce_update_freq = 8
         for t in range(self.nsteps):
             if Config.CUSTOM_REP_LOSS:
                 # collect the ground truth state for each observation
                 curr_state = self.env.callmethod("get_state")
                 mb_states.append(curr_state)
                 
-                actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac)
+                actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, None, self.dones)
                 # if t == 0:
                 #     # pi_weights = np.array(values).mean(1)
                 #     # head_idx_current_batch = pi_weights.argmax() # do rollouts with head with largest rewards
                 #     self.model.head_idx_current_batch = np.random.randint(0,Config.POLICY_NHEADS,1).item()
-                if (t % self.nce_update_freq) == 0:
-                    s_0 = self.env.callmethod("get_state")
-                    anchors_nce = self.obs.copy()
-
-                    states_nce, actions_nce, neglogps_nce, rewards_nce, dones_nce, infos_nce, labels_nce, rewards_i, values_i = self.get_NCE_samples(s_0, self.reset_env, anchors_nce, self.dones)
-                    
-                    # rewards_i = np.log(rewards_i**2+1) # as per RE3
-                    # rewards_i = -rewards_i
-
-                    mb_states_nce.append(states_nce)
-                    mb_actions_nce.append(actions_nce)
-                    mb_neglogps_nce.append(neglogps_nce)
-                    mb_rewards_nce.append(rewards_nce)
-                    mb_dones_nce.append(dones_nce)
-                    mb_infos_nce.append(infos_nce)
-                    mb_labels_nce.append(labels_nce)
-                    mb_rewards_i.append(rewards_i)
-                    mb_values_i.append(values_i)
-                    mb_anchors_nce.append(anchors_nce)
 
                 actions = actions[self.model.head_idx_current_batch]
-                # values = values[head_idx_current_batch]
+                values = values[self.model.head_idx_current_batch]
                 neglogpacs = neglogpacs[self.model.head_idx_current_batch]
-
-
             else:
                 # Given observations, get action value and neglopacs
                 # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
                 actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac,None, self.dones)
-
+                actions = actions[self.model.head_idx_current_batch]
+                values = values[self.model.head_idx_current_batch]
+                neglogpacs = neglogpacs[self.model.head_idx_current_batch]
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
             mb_neglogpacs.append(neglogpacs)
             mb_dones.append(self.dones)
+
+            # Take actions in env and look the results
+            # Infos contains a ton of useful informations
             self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
 
             eval_actions, eval_values, eval_states, eval_neglogpacs = self.model.step(self.eval_obs, update_frac)
-            if Config.CUSTOM_REP_LOSS:
-                eval_actions = eval_actions[self.model.head_idx_current_batch]
+            eval_actions = eval_actions[self.model.head_idx_current_batch]
             self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
-        
+            
             for info in self.infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
@@ -608,58 +486,32 @@ class Runner(AbstractEnvRunner):
             for info in self.eval_infos:
                 eval_maybeepinfo = info.get('episode')
                 if eval_maybeepinfo: eval_epinfos.append(eval_maybeepinfo)
-        
+            
             mb_infos.append([[float(v) for k,v in info_.items() if (k != 'episode') and (Config.ENVIRONMENT in k)] for info_ in self.infos])
             mb_rewards.append(rewards)
+
+        if Config.CUSTOM_REP_LOSS > 0:
+            s_0 = self.env.callmethod("get_state")
             
-        # if Config.CUSTOM_REP_LOSS:
-        #     s_0 = self.env.callmethod("get_state")
-        #     anchors_nce = self.obs.copy()
-        #     states_nce, rewards_nce, dones_nce, infos_nce, labels_nce, mb_rewards_i, mb_values_i = self.get_NCE_samples(s_0, self.reset_env, self.obs.copy(), self.dones)
-        # else:
-        #     states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
+            states_nce, rewards_nce, dones_nce, infos_nce, labels_nce = self.get_NCE_samples(s_0, self.reset_env, self.obs.copy(), self.dones)
+            anchors_nce = self.obs.copy()
+        else:
+            states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
 
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         #vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
-        mb_rewards_i = np.asarray(mb_rewards_i, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
-        mb_values_i = np.asarray(mb_values_i, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_infos = np.asarray(mb_infos, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
-
-        if Config.CUSTOM_REP_LOSS:
-            mb_states_nce = np.asarray(mb_states_nce, dtype=np.float32).transpose(0,3,1,2,4,5,6)
-            # mb_anchors_nce = np.asarray(mb_states_nce, dtype=np.float32).transpose(0,3,1,2,4,5,6)
-            mb_actions_nce = np.asarray(mb_actions_nce, dtype=np.float32).transpose(0,3,1,2)
-            mb_neglogps_nce = np.asarray(mb_neglogps_nce, dtype=np.float32).transpose(0,3,1,2)
-            mb_rewards_nce = np.asarray(mb_rewards_nce, dtype=np.float32).transpose(0,3,1,2)
-            mb_dones_nce = np.asarray(mb_dones_nce, dtype=np.float32).transpose(0,3,1,2)
-            mb_anchors_nce = np.asarray(mb_anchors_nce, dtype=np.float32)
-            if not len(mb_infos_nce):
-                mb_infos_nce = np.zeros_like(mb_dones_nce)
-            else:
-                mb_infos_nce = np.asarray(mb_infos_nce, dtype=np.float32).transpose(0,3,1,2,4)
-            mb_labels_nce = np.asarray(mb_labels_nce, dtype=np.float32).transpose(0,2,1)
-
-        last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[self.model.critic_idx_current_batch] #use first critic
-        
-        if Config.CUSTOM_REP_LOSS:
-            last_values_i = self.model.train_model.value_i(self.obs, update_frac, self.states, self.dones)
-            lastgaelam_i = 0
-            mb_advs_i = np.zeros_like(mb_rewards_i)
-            for t in range(len(mb_rewards_i)):
-                mb_rewards_i[t] = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)     
-        
+        last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[self.model.head_idx_current_batch] #use first critic
         # discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
-        
         lastgaelam = 0
-        
         
         for t in reversed(range(self.nsteps)):
             if t == self.nsteps - 1:
@@ -667,40 +519,17 @@ class Runner(AbstractEnvRunner):
                 nextvalues = last_values
             else:
                 nextnonterminal = 1.0 - mb_dones[t+1]
-                nextvalues = mb_values[t+1][self.model.critic_idx_current_batch] if Config.CUSTOM_REP_LOSS else mb_values[t+1]
+                nextvalues = mb_values[t+1][self.model.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else mb_values[t+1]
                 
-            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t][self.model.critic_idx_current_batch]
-            else:
-                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
-
+            delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         if Config.CUSTOM_REP_LOSS:
-            for t in reversed(range(len(mb_rewards_i))):
-                """
-                Intrinsic advantages
-                """
-                if t == len(mb_rewards_i) - 1:
-                    nextnonterminal_i = 1.0 - self.dones
-                    nextvalues_i = last_values_i
-                else:
-                    nextnonterminal_i = 1.0 - mb_dones[t+1]
-                    nextvalues_i = mb_values_i[t+1]
-
-                delta_i = mb_rewards_i[t] + self.gamma * nextvalues_i * nextnonterminal_i - mb_values_i[t]
-                mb_advs_i[t] = lastgaelam_i = delta_i + self.gamma * self.lam * nextnonterminal_i * lastgaelam_i
-        if Config.CUSTOM_REP_LOSS:
-            mb_returns_i = mb_advs_i + mb_values_i
-            mb_returns = mb_advs + mb_values[:,self.model.critic_idx_current_batch] # use first critic
+            mb_returns = mb_advs + mb_values[:,self.model.head_idx_current_batch] # use first critic
         else:
             mb_returns = mb_advs + mb_values
-            
-        if Config.CUSTOM_REP_LOSS:
-            return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, np.transpose(mb_values,(0,2,1)) , mb_neglogpacs, mb_infos, mb_values_i, mb_returns_i, mb_states_nce, mb_anchors_nce, mb_labels_nce, np.transpose(mb_actions_nce,(0,2,3,1)) , mb_neglogps_nce, mb_rewards_nce, mb_infos_nce)),
-                epinfos, eval_epinfos)
-        else:
-            return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_infos)),
-             epinfos, eval_epinfos)
+        # import ipdb;ipdb.set_trace()
+        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_infos)),
+            states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, epinfos, eval_epinfos)
 
 def sf01(arr):
     """
@@ -732,7 +561,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     if isinstance(cliprange, float): cliprange = constfn(cliprange)
     else: assert callable(cliprange)
     total_timesteps = int(total_timesteps)
-    
+
     nenvs = env.num_envs
     ob_space = env.observation_space
     ac_space = env.action_space
@@ -746,7 +575,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
     utils.load_all_params(sess)
 
-    runner = Runner(env=env, eval_env=eval_env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
+    runner = Runner(env=env, model=model, eval_env=eval_env, nsteps=nsteps, gamma=gamma, lam=lam)
 
     epinfobuf10 = deque(maxlen=10)
     epinfobuf100 = deque(maxlen=100)
@@ -762,7 +591,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     run_t_total = 0
     train_t_total = 0
 
-    can_save = False
+    can_save = True
     checkpoints = [32, 64]
     saved_key_checkpoints = [False] * len(checkpoints)
 
@@ -778,8 +607,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     if Config.RESTORE_STEP is not None:
         start_update = Config.RESTORE_STEP // nbatch
 
-    z_iter = 0
-    curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
     tb_writer = TB_Writer(sess)
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
@@ -789,29 +616,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
 
-        # if Config.CUSTOM_REP_LOSS:
-        #     params = tf.compat.v1.trainable_variables()
-        #     source_params = [p for p in params if p.name in model.train_model.RL_enc_param_names]
-        #     for i in range(1,Config.POLICY_NHEADS):
-        #         target_i_params = [p for p in params if p.name in model.train_model.target_enc_param_names[i]]
-        #         soft_update(source_params,target_i_params,tau=0.95)
-
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
-        # if z_iter < 4: # 8 epochs / skill
-        #     z_iter += 1
-        # else:
-        #     # sample new skill for current episodes
-        #     curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
-        #     model.head_idx_current_batch = curr_z
-        #     z_iter = 0
 
         packed = runner.run(update_frac=update/nupdates)
-        if Config.CUSTOM_REP_LOSS:
-            obs, returns, masks, actions, values, neglogpacs, infos, values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce, epinfos, eval_epinfos = packed
-        else:
-            obs, returns, masks, actions, values, neglogpacs, infos, epinfos, eval_epinfos = packed
-            values_i = returns_i = states_nce = anchors_nce = labels_nce = actions_nce = neglogps_nce = rewards_nce = infos_nce = None
+        obs, returns, masks, actions, values, neglogpacs, infos, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, epinfos, eval_epinfos = packed
         
         # reshape our augmented state vectors to match first dim of observation array
         # (mb_size*num_envs, 64*64*RGB)
@@ -832,23 +641,16 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
         mean_cust_loss = 0
         inds = np.arange(nbatch)
-        inds_nce = np.arange(nbatch//runner.nce_update_freq)
         for _ in range(noptepochs):
             np.random.shuffle(inds)
-            np.random.shuffle(inds_nce)
             for start in range(0, nbatch, nbatch_train):
                 sess.run([model.train_model.train_dropout_assign_ops])
                 end = start + nbatch_train
                 mbinds = inds[start:end]
-                mbinds_nce = inds_nce[start//runner.nce_update_freq:(start+nbatch_train)//runner.nce_update_freq]
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
-                if Config.CUSTOM_REP_LOSS:
-                    slices_nce = (arr[mbinds_nce] for arr in (values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce))
-                else:
-                    slices_nce = (arr for arr in (values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce))
                 
-                mblossvals.append(model.train(lrnow, cliprangenow, *slices, *slices_nce))
+                mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices))
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
         sess.run([model.train_model.run_dropout_assign_ops])
@@ -865,7 +667,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             step = update*nbatch
             eval_rew_mean = utils.process_ep_buf(eval_active_ep_buf, tb_writer=tb_writer, suffix='_eval', step=step)
             rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
-            
             ep_len_mean = np.nanmean([epinfo['l'] for epinfo in active_ep_buf])
             
             mpi_print('\n----', update)
@@ -880,8 +681,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
             mpi_print('time_elapsed', tnow - tfirststart, run_t_total, train_t_total)
             mpi_print('timesteps', update*nsteps, total_timesteps)
-
-            # eval_rew_mean = episode_rollouts(eval_env,model,step,tb_writer)
 
             mpi_print('eplenmean', ep_len_mean)
             mpi_print('eprew', rew_mean_10)
