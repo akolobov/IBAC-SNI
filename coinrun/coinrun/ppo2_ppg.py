@@ -172,7 +172,6 @@ class Model(object):
         # in case we don't use rep loss
         rep_loss = None
         # HEAD_IDX = tf.compat.v1.placeholder(tf.int32, [None])
-        A = train_model.pdtype.sample_placeholder([None],name='A')
         LATENT_FACTORS = train_model.pdtype.sample_placeholder([Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,count_latent_factors(Config.ENVIRONMENT)],name='LATENT_FACTORS')
         ADV = tf.compat.v1.placeholder(tf.float32, [None],name='ADV')
         R = tf.compat.v1.placeholder(tf.float32, [None],name='R')
@@ -192,7 +191,7 @@ class Model(object):
         vf_losses2 = tf.square(vpredclipped - R)
         vf_loss = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1, vf_losses2))
 
-        neglogpac_train = train_model.pd_train[0].neglogp(A)
+        neglogpac_train = train_model.pd_train[0].neglogp(train_model.A)
         ratio_train = tf.exp(OLDNEGLOGPAC - neglogpac_train)
         pg_losses_train = -ADV * ratio_train
         pg_losses2_train = -ADV * tf.clip_by_value(ratio_train, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
@@ -207,7 +206,7 @@ class Model(object):
 
         # Add entropy and policy loss for the samples as well
         if Config.SNI or Config.SNI2:
-            neglogpac_run = train_model.pd_run.neglogp(A)
+            neglogpac_run = train_model.pd_run.neglogp(train_model.A)
             ratio_run = tf.exp(OLDNEGLOGPAC - neglogpac_run)
             pg_losses_run = -ADV * ratio_run
             pg_losses2_run = -ADV * tf.clip_by_value(ratio_run, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
@@ -242,7 +241,7 @@ class Model(object):
 
         l2_loss = tf.reduce_sum(input_tensor=[tf.nn.l2_loss(v) for v in weight_params])
 
-        # The first occurance should be in the train_model
+        # The first occurence should be in the train_model
 
         if Config.BETA >= 0:
             info_loss = tf.compat.v1.get_collection(
@@ -266,9 +265,10 @@ class Model(object):
         info_loss = info_loss[0]
 
         if Config.REP_LOSS_WEIGHT > 0:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT
+            pi_loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT  + adv_pred * 0.25
         else:
-            loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + adv_pred * 0.25
+            pi_loss = pg_loss - entropy * ent_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + adv_pred * 0.25
+            v_loss =  vf_loss
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -276,22 +276,38 @@ class Model(object):
             trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         
         self.opt = trainer
-        grads_and_var = trainer.compute_gradients(loss, params)
-
 
         
-        
-        grads, var = zip(*grads_and_var)
+        grads_and_var_pi = trainer.compute_gradients(pi_loss, params)
+
+        grads_pi, var_pi = zip(*grads_and_var_pi)
         if max_grad_norm is not None:
-            grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-        grads_and_var = list(zip(grads, var))
+            grads_pi, _grad_norm_pi = tf.clip_by_global_norm(grads_pi, max_grad_norm)
+        grads_and_var_pi = list(zip(grads_pi, var_pi))
 
         tot_norm = tf.zeros((1,))
-        for g,v in grads_and_var:
+        for g,v in grads_and_var_pi:
             tot_norm += tf.norm(g)
         tot_norm = tf.reshape(tot_norm, [])
 
-        _train = trainer.apply_gradients(grads_and_var)
+        _train_pi = trainer.apply_gradients(grads_and_var_pi)
+
+        E_v = 9
+        _train_v = []
+        for i in range(E_v):        
+            grads_and_var_v = trainer.compute_gradients(v_loss, params)
+
+            grads_v, var_v = zip(*grads_and_var_v)
+            if max_grad_norm is not None:
+                grads_v, _grad_norm_v = tf.clip_by_global_norm(grads_v, max_grad_norm)
+            grads_and_var_pi = list(zip(grads_pi, var_pi))
+
+            tot_norm = tf.zeros((1,))
+            for g,v in grads_and_var_v:
+                tot_norm += tf.norm(g)
+            tot_norm = tf.reshape(tot_norm, [])
+
+            _train_v.append( trainer.apply_gradients(grads_and_var_v) )
 
         
         
@@ -308,7 +324,7 @@ class Model(object):
                         train_model.STATE_NCE:states_nce, train_model.ANCH_NCE:anchors_nce, train_model.LAB_NCE:labels_nce, R_NCE:rewards_nce, LATENT_FACTORS:infos_nce
                         }
             else:
-                td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
+                td_map = {train_model.X:obs, train_model.A:actions, ADV:advs, R:returns, LR:lr, train_model.X_pi:obs,
                         CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
             if states is not None:
                 td_map[train_model.S] = states
@@ -316,14 +332,17 @@ class Model(object):
             
             if Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
                 return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, tot_norm, _train],
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, tot_norm, _train_pi]+_train_v,
                     td_map
-                )[:-1]
+                )[:-(1+E_v)]
             else:
-                return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train],
+                res = sess.run(
+                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train_pi],
                     td_map
                 )[:-1]
+                for i in range(E_v):
+                    _ = sess.run([_train_v[i]],td_map)
+                return res
             
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'gradient_norm']
 
@@ -462,9 +481,9 @@ class Runner(AbstractEnvRunner):
                 # Given observations, get action value and neglopacs
                 # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
                 actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac,None, self.dones)
-                actions = actions[self.model.head_idx_current_batch]
-                values = values[self.model.head_idx_current_batch]
-                neglogpacs = neglogpacs[self.model.head_idx_current_batch]
+                # actions = actions[self.model.head_idx_current_batch]
+                # values = values[self.model.head_idx_current_batch]
+                # neglogpacs = neglogpacs[self.model.head_idx_current_batch]
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
@@ -473,10 +492,10 @@ class Runner(AbstractEnvRunner):
 
             # Take actions in env and look the results
             # Infos contains a ton of useful informations
+            
             self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
 
             eval_actions, eval_values, eval_states, eval_neglogpacs = self.model.step(self.eval_obs, update_frac)
-            eval_actions = eval_actions[self.model.head_idx_current_batch]
             self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
             
             for info in self.infos:

@@ -119,8 +119,8 @@ def get_anch_encoder():
     h = tf.keras.Model(inputs, p)
     return h
 
-def get_predictor(n_out=256):
-    inputs = tf.keras.layers.Input((256, ))
+def get_predictor(n_in=256,n_out=256):
+    inputs = tf.keras.layers.Input((n_in, ))
     p = tf.keras.layers.Dense(256,activation='relu')(inputs)
     p2 = tf.keras.layers.Dense(n_out)(p)
     h = tf.keras.Model(inputs, p2)
@@ -159,6 +159,7 @@ class CnnPolicy(object):
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, 64, 64, 3))
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
+            self.A = self.pdtype.sample_placeholder([None],name='A')
             # trajectories of length m, for N policy heads.
             self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
             self.STATE_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,1,None,64,64,3])
@@ -172,11 +173,12 @@ class CnnPolicy(object):
             self.run_dropout_assign_ops = slow_dropout_assign_ops
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
         if Config.AGENT == 'ppg':
-            X_pi, processed_x_pi = observation_input(ob_space, None)
+            self.X_pi, self.processed_x_pi = observation_input(ob_space, None)
             with tf.compat.v1.variable_scope("model_pi", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(processed_x_pi)
-                self.h_pi =  tf.concat([act_condit, act_invariant], axis=1)
-                self.adv_pi = get_predictor(n_out=1)(self.h_pi)
+                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(self.processed_x_pi)
+                act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
+                self.h_pi =  tf.concat([act_condit_pi, act_invariant_pi], axis=1)
+                self.adv_pi = get_predictor(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
 
         if Config.AGENT == 'ppo_diayn':
             # with tf.variable_scope("model", reuse=True) as scope:
@@ -351,6 +353,10 @@ class CnnPolicy(object):
             elif Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
+                return a, v, self.initial_state, neglogp
+            elif Config.AGENT == 'ppg':
+                head_idx = 0
+                a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob, self.X_pi: ob})
                 return a, v, self.initial_state, neglogp
             else:
                 # a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})
