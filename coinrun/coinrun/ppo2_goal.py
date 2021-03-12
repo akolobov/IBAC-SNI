@@ -100,9 +100,10 @@ def vidwrite(filename, images, framerate=60, vcodec='libx264'):
 # k: k parameter for K-nn
 def sinkorn(scores, temp=0.1, k=3):
     def remove_infs(x):
-        m = x[tf.math.is_inf(x)].max().item()
-        x[tf.math.is_inf(x)] = m
-        return x
+        m = tf.math.reduce_max(x[tf.math.is_inf(x)])
+        casted_x = tf.cast(tf.ones_like(x, dtype=tf.dtypes.float32), tf.float32)
+        max_tensor = tf.math.multiply(casted_x, m)
+        return tf.where(tf.math.is_inf(x), max_tensor, x)
 
     Q = scores / temp
     Q -= tf.math.reduce_max(Q)
@@ -110,11 +111,14 @@ def sinkorn(scores, temp=0.1, k=3):
     Q = tf.transpose(tf.math.exp(Q))
     Q /= tf.math.reduce_sum(Q)
 
-    r = tf.ones(Q.get_shape()[0]) / Q.get_shape()[0]
-    c = tf.ones(Q.get_shape()[1]) / Q.get_shape()[1]
+    r = tf.ones(Q.get_shape()[0]) / tf.cast(Q.get_shape()[0], tf.float32)
+    c = tf.ones(Q.get_shape()[1]) / tf.cast(Q.get_shape()[1], tf.float32)
+
     for it in range(k):
         u = tf.reduce_sum(Q, axis=1)
+        u = tf.cast(u, tf.float32)
         u = remove_infs(r / u)
+        Q = tf.cast(Q, tf.float32)
         Q *= tf.expand_dims(u, axis=1)
         Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
     Q = Q / tf.math.reduce_sum(Q, axis=0, keepdims=True)
@@ -476,7 +480,7 @@ class Runner(AbstractEnvRunner):
             total_timesteps = int(25e6)
         elif Config.VERY_SHORT_TRAINING:
             total_timesteps = int(5e6)
-        self.reset_env = make_env(steps_per_env=total_timesteps//2)# for _ in range(Config.POLICY_NHEADS)]
+        self.reset_env = make_env(steps_per_env=total_timesteps//2)[0]# for _ in range(Config.POLICY_NHEADS)]
 
     def get_NCE_samples(self, s_0, env,obs_0,done):
         states_nce = []
@@ -703,7 +707,7 @@ def constfn(val):
     return f
 
 
-def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
+def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
              vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
             log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None):
@@ -713,7 +717,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
 
     test = np.random.rand(5, 3)
     result = sinkorn(test)
-    print('resulting matrix', result)
+    print('resulting matrix', result.eval())
     #tf.compat.v1.disable_v2_behavior()
     sess = tf.compat.v1.get_default_session()
 

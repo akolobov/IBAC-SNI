@@ -267,7 +267,7 @@ class Model(object):
         if Config.REP_LOSS_WEIGHT > 0:
             pi_loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT  + adv_pred * 0.25
         else:
-            pi_loss = pg_loss - entropy * ent_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + adv_pred * 0.25
+            pi_loss = pg_loss - entropy * ent_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + adv_pred * 0.25 #+ vf_coef*vf_loss
             v_loss =  vf_loss
 
         if Config.SYNC_FROM_ROOT:
@@ -293,21 +293,19 @@ class Model(object):
         _train_pi = trainer.apply_gradients(grads_and_var_pi)
 
         E_v = 9
-        _train_v = []
-        for i in range(E_v):        
-            grads_and_var_v = trainer.compute_gradients(v_loss, params)
+        grads_and_var_v = trainer.compute_gradients(v_loss, params)
 
-            grads_v, var_v = zip(*grads_and_var_v)
-            if max_grad_norm is not None:
-                grads_v, _grad_norm_v = tf.clip_by_global_norm(grads_v, max_grad_norm)
-            grads_and_var_pi = list(zip(grads_pi, var_pi))
+        grads_v, var_v = zip(*grads_and_var_v)
+        if max_grad_norm is not None:
+            grads_v, _grad_norm_v = tf.clip_by_global_norm(grads_v, max_grad_norm)
+        grads_and_var_v = list(zip(grads_v, var_v))
 
-            tot_norm = tf.zeros((1,))
-            for g,v in grads_and_var_v:
-                tot_norm += tf.norm(g)
-            tot_norm = tf.reshape(tot_norm, [])
+        tot_norm = tf.zeros((1,))
+        for g,v in grads_and_var_v:
+            tot_norm += tf.norm(g)
+        tot_norm = tf.reshape(tot_norm, [])
 
-            _train_v.append( trainer.apply_gradients(grads_and_var_v) )
+        _train_v =  trainer.apply_gradients(grads_and_var_v) 
 
         
         
@@ -341,7 +339,7 @@ class Model(object):
                     td_map
                 )[:-1]
                 for i in range(E_v):
-                    _ = sess.run([_train_v[i]],td_map)
+                    _ = sess.run([_train_v],td_map)
                 return res
             
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'gradient_norm']

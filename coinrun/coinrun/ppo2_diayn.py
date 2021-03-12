@@ -395,7 +395,6 @@ class Runner(AbstractEnvRunner):
             total_timesteps = int(25e6)
         elif Config.VERY_SHORT_TRAINING:
             total_timesteps = int(5e6)
-        self.reset_env = make_env(steps_per_env=total_timesteps//2)
         # create one-hot encoding array for all possible skills
         a = np.array([x for x in range(Config.N_SKILLS)])
         self.one_hot_skills = np.zeros((a.size, a.max()+1))
@@ -410,9 +409,6 @@ class Runner(AbstractEnvRunner):
 
         head_idx_current_batch = 0 #np.random.randint(0,Config.POLICY_NHEADS,1).item()
        
-
-       # ensure reset env has same step counter as main env
-        self.reset_env.current_env_steps_left = self.env.current_env_steps_left
 
         # extract one-hot encoding for skill
         one_hot_skill = self.one_hot_skills[z, :]
@@ -601,10 +597,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             curr_z = np.random.randint(0, high=Config.N_SKILLS)
             packed = runner.run(update_frac=update/nupdates, z=curr_z)
             z_iter = 0
-
-        skill_log_probs = runner.model.act_model.discriminator_log_probs.eval()
-        skill_probs = np.exp(skill_log_probs)
-        print('skill probs', skill_probs)
 
         obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos = packed
         skill = np.reshape(skill, (-1, Config.N_SKILLS))

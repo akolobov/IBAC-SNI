@@ -13,6 +13,9 @@ python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --
 DIAYN:
 python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --agent ppo_diayn -diayneps 4 -n_skills 5
 
+Goal conditioned PPO:
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal 
+
 # to change the distribution mode of the first and second phase:
 -phase1 exploration -phase2 hard
 -phase1 hard -phase2 exploration
@@ -314,6 +317,8 @@ def main():
             from coinrun import ppo2_diayn as agent
         elif Config.AGENT == 'ppg':
             from coinrun import ppo2_ppg as agent
+        elif Config.AGENT == 'ppo_goal':
+            from coinrun import ppo2_goal as agent
         agent.learn(policy=policy,
                     env=venv,
                     eval_env=venv_eval,
