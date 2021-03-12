@@ -39,6 +39,10 @@ from random import choice
 """
 Intrinsic advantage methods
 """
+def soft_update(source_variables,target_variables,tau=1.0):
+    for (v_s, v_t) in zip(source_variables, target_variables):
+        v_t.shape.assert_is_compatible_with(v_s.shape)
+        v_t.assign((1 - tau) * v_t + tau * v_s)
 
 class RunningStats(object):
     # https://github.com/ChuaCheowHuan/reinforcement_learning/blob/master/RND_PPO/RND_PPO_cont_ftr_nsn_mtCar_php.ipynb
@@ -774,6 +778,15 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
     tb_writer = TB_Writer(sess)
     for update in range(start_update+1, nupdates+1):
+        # update momentum encoder
+        if Config.CUSTOM_REP_LOSS:
+            params = tf.compat.v1.trainable_variables()
+            source_params = [p for p in params if p.name in model.train_model.RL_enc_param_names]
+            for i in range(1,Config.POLICY_NHEADS):
+                target_i_params = [p for p in params if p.name in model.train_model.target_enc_param_names[i]]
+                soft_update(source_params,target_i_params,tau=0.95)
+
+
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
         tstart = time.time()
