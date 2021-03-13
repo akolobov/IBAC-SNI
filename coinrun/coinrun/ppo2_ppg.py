@@ -267,8 +267,8 @@ class Model(object):
         if Config.REP_LOSS_WEIGHT > 0:
             pi_loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT  + adv_pred * 0.25
         else:
-            pi_loss = pg_loss - entropy * ent_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + adv_pred * 0.25 #+ vf_coef*vf_loss
-            v_loss =  vf_loss
+            pi_loss = pg_loss - entropy * ent_coef + adv_pred * 0.25 #+ vf_coef*vf_loss
+            v_loss =  vf_loss * vf_coef
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -276,7 +276,6 @@ class Model(object):
             trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         
         self.opt = trainer
-
         
         grads_and_var_pi = trainer.compute_gradients(pi_loss, params)
 
@@ -292,7 +291,7 @@ class Model(object):
 
         _train_pi = trainer.apply_gradients(grads_and_var_pi)
 
-        E_v = 9
+        E_v = 5
         grads_and_var_v = trainer.compute_gradients(v_loss, params)
 
         grads_v, var_v = zip(*grads_and_var_v)

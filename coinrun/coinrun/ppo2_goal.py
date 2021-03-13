@@ -101,33 +101,6 @@ def vidwrite(filename, images, framerate=60, vcodec='libx264'):
     process.stdin.close()
     process.wait()
 
-# k: k parameter for K-nn
-def sinkorn(scores, temp=0.1, k=3):
-    def remove_infs(x):
-        m = tf.math.reduce_max(x[tf.math.is_inf(x)])
-        casted_x = tf.cast(tf.ones_like(x, dtype=tf.dtypes.float32), tf.float32)
-        max_tensor = tf.math.multiply(casted_x, m)
-        return tf.where(tf.math.is_inf(x), max_tensor, x)
-
-    Q = scores / temp
-    Q -= tf.math.reduce_max(Q)
-
-    Q = tf.transpose(tf.math.exp(Q))
-    Q /= tf.math.reduce_sum(Q)
-
-    r = tf.ones(Q.get_shape()[0]) / tf.cast(Q.get_shape()[0], tf.float32)
-    c = tf.ones(Q.get_shape()[1]) / tf.cast(Q.get_shape()[1], tf.float32)
-
-    for it in range(k):
-        u = tf.reduce_sum(Q, axis=1)
-        u = tf.cast(u, tf.float32)
-        u = remove_infs(r / u)
-        Q = tf.cast(Q, tf.float32)
-        Q *= tf.expand_dims(u, axis=1)
-        Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
-    Q = Q / tf.math.reduce_sum(Q, axis=0, keepdims=True)
-    return tf.transpose(Q)
-
 class MpiAdamOptimizer(tf.compat.v1.train.AdamOptimizer):
     """Adam optimizer that averages gradients across mpi processes."""
     def __init__(self, comm, **kwargs):
@@ -268,7 +241,7 @@ class Model(object):
             vf_losses2_i = tf.square(vpredclipped_i - R_i)
             vf_loss_i = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1_i, vf_losses2_i))
 
-            # ADV = ADV + ADV_i
+            ADV = ADV + ADV_i
 
         # TD loss for critic
         # VF loss
@@ -484,218 +457,113 @@ class Runner(AbstractEnvRunner):
             total_timesteps = int(25e6)
         elif Config.VERY_SHORT_TRAINING:
             total_timesteps = int(5e6)
-        self.reset_env = make_env(steps_per_env=total_timesteps//2)[0]# for _ in range(Config.POLICY_NHEADS)]
+        # create one-hot encoding array for all possible skills
+        a = np.array([x for x in range(Config.N_SKILLS)])
+        self.one_hot_skills = np.zeros((a.size, a.max()+1))
+        self.one_hot_skills[np.arange(a.size), a] = 1
 
-    def get_NCE_samples(self, s_0, env,obs_0,done):
-        states_nce = []
-        rewards_nce = []
-        actions_nce = []
-        neglogps_nce = []
-        dones_nce = []
-        infos_nce = []
-        v_is = []
-        r_is = []
 
-        obs = obs_0.copy()
-        # for each policy head, collect m step rollouts
-        for k in range(Config.POLICY_NHEADS):
-            env.callmethod("set_state", s_0)
-            state_nce = []
-            action_nce = []
-            neglogp_nce = []
-            reward_nce = []
-            done_nce = []
-            info_nce = []
-            for m in range(Config.REP_LOSS_M):
-                actions, values, _, neglogps = self.model.step(obs, 1)
-                actions = actions[k]
-                values = values[k]
-                neglogps = neglogps[k]
-                obs, reward, done, info = env.step(actions)
-                state_nce.append(obs)
-                # if m == Config.REP_LOSS_M-1: # direct model for remaining of trajectory
-                #     reward = reward + values
-                action_nce.append(actions)
-                neglogp_nce.append(neglogps)
-                reward_nce.append(reward)
-                done_nce.append(done)
-                info_nce.append([[float(v) for k,v in info_.items() if (k != 'episode') and (Config.ENVIRONMENT in k)] for info_ in info])
-            states_nce.append(state_nce)
-            actions_nce.append(action_nce)
-            neglogps_nce.append(neglogp_nce)
-            rewards_nce.append(reward_nce)
-            dones_nce.append(done_nce)
-            infos_nce.append(info_nce)
-
-        states_nce = np.transpose(np.array(states_nce),(1,0,2,3,4,5))
-        actions_nce = np.transpose(np.array(actions_nce),(1,0,2))
-        neglogps_nce = np.transpose(np.array(neglogps_nce),(1,0,2))
-        rewards_nce = np.transpose(np.array(rewards_nce),(1,0,2))
-        dones_nce = np.transpose(np.array(dones_nce),(1,0,2))
-        infos_nce = np.transpose(np.array(infos_nce),(1,0,2,3))
-        # each head learns on own samples
-        self_labels = np.repeat(np.arange(0,Config.POLICY_NHEADS).reshape(-1,1),Config.NUM_ENVS,1)
-        labels = self_labels
-        v_i, r_i = self.model.train_model.nce_fw_pass(nce_dict={self.model.train_model.STATE_NCE:states_nce,self.model.train_model.ANCH_NCE:obs_0,self.model.train_model.LAB_NCE:labels,self.model.train_model.STATE:obs_0})
-        # each head learns on quantiles of V
-        # sum_rew = rewards_nce.sum(0)
-        # quantiles = np.quantile(sum_rew,np.linspace(0,1,Config.POLICY_NHEADS+1))[1:]
-
-        # if quantiles[0] == quantiles[-1]: # only 1 reward value -> train on own trajectory
-        #     labels =  self_labels
-        # else:
-        #     labels = np.digitize(sum_rew, bins=quantiles)
-        
-        return states_nce, actions_nce, neglogps_nce, rewards_nce, dones_nce, infos_nce, labels, np.array(v_i), np.array(r_i)
-
-    def run(self, update_frac):
-        print('Using head %d'%self.model.head_idx_current_batch)
+    def run(self, update_frac, z, pretrain=False):
         # Here, we init the lists that will contain the mb of experiences
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[]
+        mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_rewards_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[],[]
         mb_states = []
         epinfos = []
 
-        mb_states_nce, mb_actions_nce, mb_neglogps_nce, mb_rewards_nce, mb_dones_nce, mb_infos_nce, mb_labels_nce, mb_rewards_i, mb_values_i = [], [], [], [], [], [], [], [], []
+        head_idx_current_batch = 0 #np.random.randint(0,Config.POLICY_NHEADS,1).item()
+       
 
-        states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce = [],[],[],[],[]
-
-        # ensure reset env has same step counter as main env
-        self.reset_env.current_env_steps_left = self.env.current_env_steps_left
+        # extract one-hot encoding for skill
+        one_hot_skill = self.one_hot_skills[z, :]
+        one_hot_skill = np.stack(Config.NUM_ENVS*[one_hot_skill])
+        # the skill remains fixed for each minibatch 
+        mb_skill = np.asarray([one_hot_skill]*self.nsteps, dtype=np.int32)
         # For n in range number of steps
-        self.nce_update_freq = 8
-        for t in range(self.nsteps):
-            if Config.CUSTOM_REP_LOSS:
-                # collect the ground truth state for each observation
-                curr_state = self.env.callmethod("get_state")
-                mb_states.append(curr_state)
-                
-                actions, values, self.states, neglogpacs = self.model.step(self.obs, update_frac, return_intrinsic=False)
-                # if t == 0:
-                #     # pi_weights = np.array(values).mean(1)
-                #     # head_idx_current_batch = pi_weights.argmax() # do rollouts with head with largest rewards
-                #     self.model.head_idx_current_batch = np.random.randint(0,Config.POLICY_NHEADS,1).item()
-                if (t % self.nce_update_freq) == 0:
-                    s_0 = self.env.callmethod("get_state")
-                    anchors_nce = self.obs.copy()
-
-                    states_nce, actions_nce, neglogps_nce, rewards_nce, dones_nce, infos_nce, labels_nce, rewards_i, values_i = self.get_NCE_samples(s_0, self.reset_env, anchors_nce, self.dones)
-                    
-                    # rewards_i = -np.log(1+rewards_i) # as per RE3
-                    rewards_i = -rewards_i
-
-                    mb_states_nce.append(states_nce)
-                    mb_actions_nce.append(actions_nce)
-                    mb_neglogps_nce.append(neglogps_nce)
-                    mb_rewards_nce.append(rewards_nce)
-                    mb_dones_nce.append(dones_nce)
-                    mb_infos_nce.append(infos_nce)
-                    mb_labels_nce.append(labels_nce)
-                    mb_rewards_i.append(rewards_i)
-                    mb_values_i.append(values_i)
-
-                actions = actions[self.model.head_idx_current_batch]
-                # values = values[head_idx_current_batch]
-                neglogpacs = neglogpacs[self.model.head_idx_current_batch]
-
-            else:
-                # Given observations, get action value and neglopacs
-                # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-                actions, values, self.states, neglogpacs = self.model.step(self.obs,  update_frac,None, self.dones)
-
+        for _ in range(self.nsteps):
+            # Given observations, get action value and neglopacs
+            # We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
+            
+            actions, values, values_i, r_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_values.append(values)
+            mb_values_i.append(values_i)
             mb_neglogpacs.append(neglogpacs)
             mb_dones.append(self.dones)
+
+            # Take actions in env and look the results
+            # Infos contains a ton of useful informations
             self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
-        
+            
             for info in self.infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
-        
-            mb_infos.append([[float(v) for k,v in info_.items() if (k != 'episode') and (Config.ENVIRONMENT in k)] for info_ in self.infos])
+                
+            mb_infos.append([[float(v) for k,v in info_.items() if k != 'episode'] for info_ in self.infos])
             mb_rewards.append(rewards)
-            
-        # if Config.CUSTOM_REP_LOSS:
-        #     s_0 = self.env.callmethod("get_state")
-        #     anchors_nce = self.obs.copy()
-        #     states_nce, rewards_nce, dones_nce, infos_nce, labels_nce, mb_rewards_i, mb_values_i = self.get_NCE_samples(s_0, self.reset_env, self.obs.copy(), self.dones)
-        # else:
-        #     states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
+            # normalize diayn rewards
+            r_i = r_i - np.log(1/Config.N_SKILLS)
+            mb_rewards_i.append(r_i) 
+
+ 
+        states_nce = rewards_nce = dones_nce = infos_nce = labels_nce = anchors_nce = tf.compat.v1.placeholder(tf.float32, [None])
 
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         #vidwrite('plunder_avg_phi_attempt-{}.avi'.format(datetime.datetime.now().timestamp()), mb_obs[:, 0, :, :, :])
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
-        mb_rewards_i = np.asarray(mb_rewards_i, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_values_i = np.asarray(mb_values_i, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_infos = np.asarray(mb_infos, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
+        last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
+        last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
 
-        mb_states_nce = np.asarray(mb_states_nce, dtype=np.float32).transpose(0,3,1,2,4,5,6)
-        # mb_anchors_nce = np.asarray(mb_states_nce, dtype=np.float32).transpose(0,3,1,2,4,5,6)
-        mb_actions_nce = np.asarray(mb_actions_nce, dtype=np.float32).transpose(0,3,1,2)
-        mb_neglogps_nce = np.asarray(mb_neglogps_nce, dtype=np.float32).transpose(0,3,1,2)
-        mb_rewards_nce = np.asarray(mb_rewards_nce, dtype=np.float32).transpose(0,3,1,2)
-        mb_dones_nce = np.asarray(mb_dones_nce, dtype=np.float32).transpose(0,3,1,2)
-        mb_infos_nce = np.asarray(mb_infos_nce, dtype=np.float32)#.transpose(0,3,1,2)
-        if not len(mb_infos_nce):
-            mb_infos_nce = np.zeros_like(mb_dones_nce)
-        mb_labels_nce = np.asarray(mb_labels_nce, dtype=np.float32).transpose(0,2,1)
+        # if pretrain is true, ignore extrinsic reward
+        if pretrain:
+            mb_rewards = np.zeros_like(mb_rewards)
+            mb_values = np.zeros_line(mb_values)
+            last_values = np.zeros_like(last_values)
+        for t in range(self.nsteps):    
+            mb_rewards_i[t] = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)       
+            # mb_rewards[t] = running_stats_fun(self.model.running_stats_r, mb_rewards[t], 1, False)    
 
-        last_values = self.model.value(self.obs, update_frac, self.states, self.dones)[self.model.head_idx_current_batch] #use first critic
-        last_values_i = self.model.train_model.value_i(self.obs, update_frac, self.states, self.dones)
-
-        if Config.CUSTOM_REP_LOSS:
-            for t in range(len(mb_rewards_i)):
-                mb_rewards_i[t] = running_stats_fun(self.model.running_stats_r_i, mb_rewards_i[t], 1, False)     
-        
         # discount/bootstrap off value fn
         mb_returns = np.zeros_like(mb_rewards)
         mb_advs = np.zeros_like(mb_rewards)
-        mb_advs_i = np.zeros_like(mb_rewards_i)
+        mb_advs_i = np.zeros_like(mb_rewards)
         lastgaelam = 0
         lastgaelam_i = 0
-        
         for t in reversed(range(self.nsteps)):
             if t == self.nsteps - 1:
                 nextnonterminal = 1.0 - self.dones
                 nextvalues = last_values
             else:
                 nextnonterminal = 1.0 - mb_dones[t+1]
-                nextvalues = mb_values[t+1][self.model.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else mb_values[t+1]
-                
-            if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
-                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t][self.model.head_idx_current_batch]
-            else:
-                delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
-
+                nextvalues = mb_values[t+1]
+            delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
-        if Config.CUSTOM_REP_LOSS:
-            for t in reversed(range(len(mb_rewards_i))):
-                """
-                Intrinsic advantages
-                """
-                if t == len(mb_rewards_i) - 1:
-                    nextnonterminal_i = 1.0 - self.dones
-                    nextvalues_i = last_values_i
-                else:
-                    nextnonterminal_i = 1.0 - mb_dones[t+1]
-                    nextvalues_i = mb_values_i[t+1]
 
-                delta_i = mb_rewards_i[t] + self.gamma * nextvalues_i * nextnonterminal_i - mb_values_i[t]
-                mb_advs_i[t] = lastgaelam_i = delta_i + self.gamma * self.lam * nextnonterminal_i * lastgaelam_i
-        if Config.CUSTOM_REP_LOSS:
-            mb_returns_i = mb_advs_i + mb_values_i
-            mb_returns = mb_advs + mb_values[:,self.model.head_idx_current_batch] # use first critic
-        else:
-            mb_returns = mb_advs + mb_values
+            """
+            Intrinsic advantages
+            """
+            if t == self.nsteps - 1:
+                nextnonterminal_i = 1.0 - self.dones
+                nextvalues_i = last_values_i
+            else:
+                nextnonterminal_i = 1.0 - mb_dones[t+1]
+                nextvalues_i = mb_values_i[t+1]
+
+            delta_i = mb_rewards_i[t] + self.gamma * nextvalues_i * nextnonterminal_i - mb_values_i[t]
+            mb_advs_i[t] = lastgaelam_i = delta_i + self.gamma * self.lam * nextnonterminal_i * lastgaelam_i
             
-        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, (np.transpose(mb_values,(0,2,1)) if Config.CUSTOM_REP_LOSS else mb_values), mb_neglogpacs, mb_infos, mb_values_i, mb_returns_i, mb_states_nce, mb_obs, mb_labels_nce, mb_actions_nce , mb_neglogps_nce, mb_rewards_nce, mb_infos_nce)),
-             epinfos)
+        mb_returns = mb_advs + mb_values
+        mb_returns_i = mb_advs_i + mb_values_i
+
+        return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos)),
+            states_nce, anchors_nce, labels_nce, epinfos)
+
 
 def sf01(arr):
     """
@@ -718,11 +586,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     mpi_size = comm.Get_size()
-
-    test = np.random.rand(5, 3)
-    result = sinkorn(test)
-    print('resulting matrix', result.eval())
-    #tf.compat.v1.disable_v2_behavior()
     sess = tf.compat.v1.get_default_session()
 
     if isinstance(lr, float): lr = constfn(lr)
@@ -779,12 +642,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     tb_writer = TB_Writer(sess)
     for update in range(start_update+1, nupdates+1):
         # update momentum encoder
-        if Config.CUSTOM_REP_LOSS:
-            params = tf.compat.v1.trainable_variables()
-            source_params = [p for p in params if p.name in model.train_model.RL_enc_param_names]
-            for i in range(1,Config.POLICY_NHEADS):
-                target_i_params = [p for p in params if p.name in model.train_model.target_enc_param_names[i]]
-                soft_update(source_params,target_i_params,tau=0.95)
+        params = tf.compat.v1.trainable_variables()
+        source_params = [p for p in params if "online" in p.name]
+        target_params = [p for p in params if "target" in p.name]
+        for t in target_params:
+            print('target name', t.name)
+        for s in source_params:
+            print('source name', s.name)
+        soft_update(source_params, target_params, tau=0.95)
 
 
         assert nbatch % nminibatches == 0
@@ -796,15 +661,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
         mpi_print('collecting rollouts...')
         run_tstart = time.time()
-        # if z_iter < 4: # 8 epochs / skill
-        #     z_iter += 1
-        # else:
-        #     # sample new skill for current episodes
-        #     curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
-        #     model.head_idx_current_batch = curr_z
-        #     z_iter = 0
+        if z_iter < 4: # 8 epochs / skill
+            z_iter += 1
+        else:
+            # sample new skill for current episodes
+            curr_z = np.random.randint(0, high=10)
+            z_iter = 0
 
-        packed = runner.run(update_frac=update/nupdates)
+        packed = runner.run(update_frac=update/nupdates, z=curr_z)
         obs, returns, masks, actions, values, neglogpacs, infos, values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce, epinfos = packed
         
         # reshape our augmented state vectors to match first dim of observation array

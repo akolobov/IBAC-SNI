@@ -79,11 +79,38 @@ def choose_cnn(images,prefix=""):
         raise NotImplementedError()
         out = nature_cnn(scaled_images)
     elif arch == 'impala':
-        return impala_cnn(scaled_images)
+        return impala_cnn(scaled_images,prefix=prefix)
     elif arch == 'impalalarge':
         return impala_cnn(scaled_images, depths=[32, 64, 64, 64, 64], prefix=prefix)
     else:
         assert(False)
+
+# k: k parameter for K-nn
+def sinkhorn(scores, temp=0.1, k=3):
+    def remove_infs(x):
+        m = tf.math.reduce_max(x[tf.math.is_inf(x)])
+        casted_x = tf.cast(tf.ones_like(x, dtype=tf.dtypes.float32), tf.float32)
+        max_tensor = tf.math.multiply(casted_x, m)
+        return tf.where(tf.math.is_inf(x), max_tensor, x)
+
+    Q = scores / temp
+    Q -= tf.math.reduce_max(Q)
+
+    Q = tf.transpose(tf.math.exp(Q))
+    Q /= tf.math.reduce_sum(Q)
+
+    r = tf.ones(Q.get_shape()[0]) / tf.cast(Q.get_shape()[0], tf.float32)
+    c = tf.ones(Q.get_shape()[1]) / tf.cast(Q.get_shape()[1], tf.float32)
+
+    for it in range(k):
+        u = tf.reduce_sum(Q, axis=1)
+        u = tf.cast(u, tf.float32)
+        u = remove_infs(r / u)
+        Q = tf.cast(Q, tf.float32)
+        Q *= tf.expand_dims(u, axis=1)
+        Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
+    Q = Q / tf.math.reduce_sum(Q, axis=0, keepdims=True)
+    return tf.transpose(Q)
 
 def get_rnd_predictor(trainable):
     inputs = tf.keras.layers.Input((256, ))
@@ -126,6 +153,21 @@ def get_predictor(n_in=256,n_out=256):
     h = tf.keras.Model(inputs, p2)
     return h
 
+def get_linear_layer(n_in=256,n_out=128):
+    inputs = tf.keras.layers.Input((n_in, ))
+    p = tf.keras.layers.Dense(n_out)(inputs)
+    h = tf.keras.Model(inputs, p)
+    return h
+
+def get_online_predictor():
+    inputs = tf.keras.layers.Input((128,))
+    p = tf.keras.layers.Dense(128, activation='relu')(inputs)
+    p2 = tf.keras.layers.Dense(512, activation='relu')(p)
+    p3 = tf.keras.layers.Dense(128)(p2)
+    h = tf.keras.Model(inputs, p3)
+    return h
+
+
 def tanh_clip(x, clip_val=20.):
     '''
     soft clip values to the range [-clip_val, +clip_val]
@@ -167,17 +209,24 @@ class CnnPolicy(object):
             # labels of Q value quantile bins
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
             self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
-        with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
-            act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
-            self.train_dropout_assign_ops = fast_dropout_assigned_ops
-            self.run_dropout_assign_ops = slow_dropout_assign_ops
-            self.h =  tf.concat([act_condit, act_invariant], axis=1)
+        if Config.AGENT == 'ppo_goal':
+             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
+                self.train_dropout_assign_ops = fast_dropout_assigned_ops
+                self.run_dropout_assign_ops = slow_dropout_assign_ops
+                self.h =  tf.concat([act_condit, act_invariant], axis=1)
+        else:
+            with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
+                self.train_dropout_assign_ops = fast_dropout_assigned_ops
+                self.run_dropout_assign_ops = slow_dropout_assign_ops
+                self.h =  tf.concat([act_condit, act_invariant], axis=1)
         if Config.AGENT == 'ppg':
             self.X_pi, self.processed_x_pi = observation_input(ob_space, None)
-            with tf.compat.v1.variable_scope("model_pi", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(self.processed_x_pi)
-                act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
+            with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(processed_x,prefix='_pi_')
                 self.h_pi =  tf.concat([act_condit_pi, act_invariant_pi], axis=1)
+                act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
                 self.adv_pi = get_predictor(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
 
         if Config.AGENT == 'ppo_diayn':
@@ -301,6 +350,24 @@ class CnnPolicy(object):
             self.rnd_diff = tf.reduce_mean(self.rnd_diff,1)
             rnd_diff_no_grad = tf.stop_gradient(self.rnd_diff)
 
+        elif Config.AGENT == 'ppo_goal':
+            # 512 prototypes of size 128 as per Proto-RL paper: 
+            self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(128, 512)), trainable=True, name='Prototypes')
+            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+                online_projector = get_linear_layer()
+                z_t = online_projector(self.h)
+                
+            online_predictor = get_online_predictor()
+            u_t = online_predictor(z_t)
+                
+            self.p_t = tf.nn.log_softmax(tf.linalg.matmul(u_t, self.protos) / 0.1, axis=1)
+            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit, act_invariant, _, _ = choose_cnn(processed_x[1:,])
+                target_encoder =  tf.concat([act_condit, act_invariant], axis=1)
+                target_projector = get_linear_layer()
+                self.z_t_1 = target_projector(target_encoder)
+                
+            
         with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
             if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
                 self.pd_train = []
@@ -310,7 +377,7 @@ class CnnPolicy(object):
                 with tf.compat.v1.variable_scope("head_i", reuse=tf.compat.v1.AUTO_REUSE):
                     self.pd_train_i = self.pdtype.pdfromlatent(self.phi_STATE, init_scale=0.01)[0]
             elif Config.AGENT == 'ppg':
-                with tf.compat.v1.variable_scope("head_pi", reuse=tf.compat.v1.AUTO_REUSE):
+                with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
                     self.pd_train = [self.pdtype.pdfromlatent(self.h_pi, init_scale=0.01)[0]]
             else:
                 with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
@@ -387,6 +454,12 @@ class CnnPolicy(object):
 
         def custom_train(ob, rep_vecs):
             return sess.run([self.rep_loss], {X: ob, REP_PROC: rep_vecs})[0]
+
+        def compute_codes():
+            self.protos = tf.linalg.normalize(self.protos, ord='euclidean')[0]
+            self.z_t_1 = tf.linalg.normalize(self.z_t_1, ord='euclidean')[0]
+            codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), self.protos))
+            self.proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(codes * self.p_t))
 
         self.X = X
         self.processed_x = processed_x
