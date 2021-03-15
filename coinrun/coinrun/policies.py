@@ -3,7 +3,7 @@ import tensorflow as tf
 from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch, lstm
 from baselines.common.distributions import make_pdtype, _matching_fc
 from baselines.common.input import observation_input
-from coinrun.ppo2 import MpiAdamOptimizer
+from coinrun.ppo2_goal import sinkhorn
 # TODO this is no longer supported in tfv2, so we'll need to
 # properly refactor where it's used if we want to use
 # some of the options (e.g. beta)
@@ -84,33 +84,6 @@ def choose_cnn(images,prefix=""):
         return impala_cnn(scaled_images, depths=[32, 64, 64, 64, 64], prefix=prefix)
     else:
         assert(False)
-
-# k: k parameter for K-nn
-def sinkhorn(scores, temp=0.1, k=3):
-    def remove_infs(x):
-        m = tf.math.reduce_max(x[tf.math.is_inf(x)])
-        casted_x = tf.cast(tf.ones_like(x, dtype=tf.dtypes.float32), tf.float32)
-        max_tensor = tf.math.multiply(casted_x, m)
-        return tf.where(tf.math.is_inf(x), max_tensor, x)
-
-    Q = scores / temp
-    Q -= tf.math.reduce_max(Q)
-
-    Q = tf.transpose(tf.math.exp(Q))
-    Q /= tf.math.reduce_sum(Q)
-
-    r = tf.ones(Q.get_shape()[0]) / tf.cast(Q.get_shape()[0], tf.float32)
-    c = tf.ones(Q.get_shape()[1]) / tf.cast(Q.get_shape()[1], tf.float32)
-
-    for it in range(k):
-        u = tf.reduce_sum(Q, axis=1)
-        u = tf.cast(u, tf.float32)
-        u = remove_infs(r / u)
-        Q = tf.cast(Q, tf.float32)
-        Q *= tf.expand_dims(u, axis=1)
-        Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
-    Q = Q / tf.math.reduce_sum(Q, axis=0, keepdims=True)
-    return tf.transpose(Q)
 
 def get_rnd_predictor(trainable):
     inputs = tf.keras.layers.Input((256, ))
@@ -201,6 +174,7 @@ class CnnPolicy(object):
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(32, 32, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
+            self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(128, Config.N_SKILLS)), trainable=True, name='Prototypes')
             self.A = self.pdtype.sample_placeholder([None],name='A')
             # trajectories of length m, for N policy heads.
             self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
@@ -361,24 +335,20 @@ class CnnPolicy(object):
                 self.h_codes =  tf.concat([act_condit, act_invariant], axis=1)
             # 512 prototypes of size 128 as per Proto-RL paper: 
             # Note that we pass in the current cluster as a one-hot encoding vector
-            self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(128, Config.N_SKILLS)), trainable=True, name='Prototypes')
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 online_projector = get_linear_layer()
                 z_t = online_projector(self.h_codes)
                 
             online_predictor = get_online_predictor()
-            u_t = online_predictor(z_t)
+            self.u_t = online_predictor(z_t)
                 
-            p_t = tf.nn.log_softmax(tf.linalg.matmul(u_t, self.protos) / 0.1, axis=1)
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, _, _ = choose_cnn(X_T_1)
                 target_encoder =  tf.concat([act_condit, act_invariant], axis=1)
                 target_projector = get_linear_layer()
                 self.z_t_1 = target_projector(target_encoder)
-            self.protos = tf.linalg.normalize(self.protos, ord='euclidean')[0]
             self.z_t_1 = tf.linalg.normalize(self.z_t_1, ord='euclidean')[0]
-            self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), self.protos))
-            self.proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(self.codes * p_t))
+            self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, ord='euclidean')[0]))
                 
         if Config.AGENT == 'ppg':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -443,8 +413,8 @@ class CnnPolicy(object):
                 a, v, v_i, neglogp, r_i  = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.skill_log_prob], {X: ob, Z_INT: skill_idx, Z: one_hot_skill})
                 return a, v, v_i, r_i, self.initial_state, neglogp
             elif Config.AGENT == 'ppo_goal':
-                a, v, v_i, neglogp, u_t, z_t_1 = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], u_t, self.z_t_1], {X: ob, Z: one_hot_skill})
-                return a, v, v_i, self.initial_state, neglogp, u_t, z_t_1 
+                a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {X: ob, Z: one_hot_skill})
+                return a, v, v_i, self.initial_state, neglogp
             elif Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
@@ -484,7 +454,7 @@ class CnnPolicy(object):
             return sess.run([self.rep_loss], {X: ob, REP_PROC: rep_vecs})[0]
         
         def compute_codes(ob):
-            return sess.run([self.codes], {REP_PROC: ob})
+            return sess.run([self.codes, self.u_t, self.z_t_1], {REP_PROC: ob})
 
         self.X = X
         self.processed_x = processed_x

@@ -36,6 +36,33 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 
 from random import choice
 
+
+# k: k parameter for K-nn
+def sinkhorn(scores, temp=0.1, k=3):
+    def remove_infs(x):
+        m = tf.math.reduce_max(x[tf.math.is_inf(x)])
+        casted_x = tf.cast(tf.ones_like(x, dtype=tf.dtypes.float32), tf.float32)
+        max_tensor = tf.math.multiply(casted_x, m)
+        return tf.where(tf.math.is_inf(x), max_tensor, x)
+
+    Q = scores / temp
+    Q -= tf.math.reduce_max(Q)
+
+    Q = tf.transpose(tf.math.exp(Q))
+    Q /= tf.math.reduce_sum(Q)
+
+    r = tf.ones(Q.get_shape()[0]) / tf.cast(Q.get_shape()[0], tf.float32)
+    c = tf.ones(Q.get_shape()[1]) / tf.cast(Q.get_shape()[1], tf.float32)
+
+    for it in range(k):
+        u = tf.reduce_sum(Q, axis=1)
+        u = tf.cast(u, tf.float32)
+        u = remove_infs(r / u)
+        Q = tf.cast(Q, tf.float32)
+        Q *= tf.expand_dims(u, axis=1)
+        Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
+    Q = Q / tf.math.reduce_sum(Q, axis=0, keepdims=True)
+    return tf.transpose(Q)
 """
 Intrinsic advantage methods
 """
@@ -221,6 +248,8 @@ class Model(object):
 		rep_loss = None
 		SKILLS = tf.compat.v1.placeholder(tf.float32, shape=[nbatch_train, Config.N_SKILLS], name='mb_skill')
 		A = train_model.pdtype.sample_placeholder([None])
+		U_T = tf.compat.v1.placeholder(tf.float32, [1024, 128])
+		Z_T_1 = tf.compat.v1.placeholder(tf.float32, [1024, 128])
 		ADV = tf.compat.v1.placeholder(tf.float32, [None])
 		ADV_2 = tf.compat.v1.placeholder(tf.float32, [None])
 		ADV = ADV + ADV_2
@@ -315,7 +344,9 @@ class Model(object):
 		assert len(info_loss) == 1
 		info_loss = info_loss[0]
 
-		rep_loss = train_model.proto_loss
+		p_t = tf.nn.log_softmax(tf.linalg.matmul(U_T, train_model.protos) / 0.1, axis=1)
+		curr_codes = sinkhorn(scores=tf.linalg.matmul(Z_T_1, tf.linalg.normalize(train_model.protos, ord='euclidean')[0]))
+		rep_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(curr_codes * p_t))
 		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + (rep_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef)
 
 		if Config.SYNC_FROM_ROOT:
@@ -343,18 +374,17 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs, states=None):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs, u_t, z_t_1, states=None):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
 			advs = (advs - adv_mean) / (adv_std + 1e-8)
-
 			advs_i = returns_i - values_i
 			adv_mean_i = np.mean(advs_i, axis=0, keepdims=True)
 			adv_std_i = np.std(advs_i, axis=0, keepdims=True)
 			advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
 
-			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, SKILLS: skills, train_model.Z: skills}
+			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, U_T: u_t, Z_T_1: z_t_1}
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
@@ -445,15 +475,14 @@ class Runner(AbstractEnvRunner):
 		for _ in range(self.nsteps):
 			# Given observations, get action value and neglopacs
 			# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-			actions, values, values_i, self.states, neglogpacs, u_t, z_t_1 = self.model.step(self.obs,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			actions, values, values_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
 			mb_values_i.append(values_i)
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
-			mb_u_t.append(u_t)
-			mb_z_t_1.append(z_t_1)
+			
 
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
@@ -477,22 +506,32 @@ class Runner(AbstractEnvRunner):
 		mb_values_i = np.asarray(mb_values_i, dtype=np.float32)
 		mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
 		mb_infos = np.asarray(mb_infos, dtype=np.float32)
-		mb_dones = np.asarray(mb_dones, dtype=np.bool)
-		mb_u_t = np.asarray(mb_u_t, dtype=np.float32)
-		mb_z_t_1 = np.asarray(mb_z_t_1, dtype=np.float32)
+		mb_dones = np.asarray(mb_dones, dtype=np.bool)	
 		last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
 		last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
 		mb_codes = []
 		obs_list = np.split(mb_obs, 8)
 		for curr_ob in obs_list:
 			# compute codes
-			codes = self.model.compute_codes(curr_ob)[0]
-			print('curr ob shape', curr_ob.shape)
-			print(' curr code shape', codes.shape)
+			codes, u_t, z_t_1 = self.model.compute_codes(curr_ob)
+
+			# add in gaussian noise for missed samples.
+			rand_arr_1 = np.random.normal(size=(32, 128))
+			rand_arr_2 = np.random.normal(size=(32, 5))
+			u_t = np.concatenate([u_t, rand_arr_1])
+			z_t_1 = np.concatenate([rand_arr_1, z_t_1])
+			codes = np.concatenate([rand_arr_2, codes])
 			mb_codes.append(codes)
+			mb_u_t.append(u_t)
+			mb_z_t_1.append(z_t_1)
 			
 		codes = np.asarray(mb_codes)
-		print('codes shape', codes.shape)
+		mb_u_t = np.asarray(mb_u_t, dtype=np.float32)
+		mb_z_t_1 = np.asarray(mb_z_t_1, dtype=np.float32)
+
+		codes = codes.reshape((-1, Config.N_SKILLS))
+		mb_u_t = mb_u_t.reshape((-1, 128))
+		mb_z_t_1 = mb_z_t_1.reshape((-1, 128))
 		# for each observation, find the most likely code/cluster
 		hard_codes = np.argmax(codes, axis=1)
 		
@@ -500,8 +539,6 @@ class Runner(AbstractEnvRunner):
 		masked_codes = np.ma.masked_equal(hard_codes, z).mask
 		# rewards are 1 for states with the current code, zero else
 		code_rewards = masked_codes*1
-		# pad reward of last sample
-		code_rewards = np.append(code_rewards, np.zeros(32))
 		mb_rewards_i = np.reshape(code_rewards, (256, 32))
 		
 
@@ -547,7 +584,7 @@ class Runner(AbstractEnvRunner):
 		mb_returns = mb_advs + mb_values
 		mb_returns_i = mb_advs_i + mb_values_i
 
-		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos)),
+		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1)),
 			states_nce, anchors_nce, labels_nce, epinfos)
 
 
@@ -652,7 +689,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			packed = runner.run(update_frac=update/nupdates, z=curr_z)
 			z_iter = 0
 
-		obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos = packed
+		obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, u_t, z_t_1, states_nce, anchors_nce, labels_nce, epinfos = packed
+		u_t = u_t.reshape((-1, 128))
+		z_t_1 = z_t_1.reshape((-1, 128))
 		skill = np.reshape(skill, (-1, Config.N_SKILLS))
 		# reshape our augmented state vectors to match first dim of observation array
 		# (mb_size*num_envs, 64*64*RGB)
@@ -678,7 +717,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
+				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, u_t, z_t_1))
 				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices))
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
