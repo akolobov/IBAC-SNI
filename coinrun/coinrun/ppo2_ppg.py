@@ -272,12 +272,15 @@ class Model(object):
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
+            trainer_v = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
         else:
             trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
+            trainer_v = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         
         self.opt = trainer
-        
-        grads_and_var_pi = trainer.compute_gradients(pi_loss, params)
+        # import ipdb;ipdb.set_trace()
+        pi_params = [p for p in params if 'pi_branch' in p.name]
+        grads_and_var_pi = trainer.compute_gradients(pi_loss, pi_params)
 
         grads_pi, var_pi = zip(*grads_and_var_pi)
         if max_grad_norm is not None:
@@ -292,7 +295,8 @@ class Model(object):
         _train_pi = trainer.apply_gradients(grads_and_var_pi)
 
         E_v = 5
-        grads_and_var_v = trainer.compute_gradients(v_loss, params)
+        v_params = [p for p in params if 'model_0' in p.name]
+        grads_and_var_v = trainer_v.compute_gradients(v_loss, v_params)
 
         grads_v, var_v = zip(*grads_and_var_v)
         if max_grad_norm is not None:
@@ -304,7 +308,7 @@ class Model(object):
             tot_norm += tf.norm(g)
         tot_norm = tf.reshape(tot_norm, [])
 
-        _train_v =  trainer.apply_gradients(grads_and_var_v) 
+        _train_v =  trainer_v.apply_gradients(grads_and_var_v) 
 
         
         

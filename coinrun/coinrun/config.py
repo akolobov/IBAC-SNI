@@ -66,11 +66,11 @@ class ConfigSingle(object):
         # Weighting value for the custom representation loss
         type_keys.append(('rep_lambda', 'rep_loss_weight', float, 0))
 
-        # total number of skills that can be sampled for DIAYN
+        # total number of skills that can be sampled for DIAYN/ Proto-RL
         type_keys.append(('n_skills', 'n_skills', int, 5))
 
-        # Number of epochs before we switch skills for diayn
-        type_keys.append(('diayneps', 'diayn_epochs', int, 2))
+        # Number of epochs before we switch skills for diayn or protoRL
+        type_keys.append(('skilleps', 'skill_epochs', int, 2))
 
         # Distribution mode for first phase of training
         type_keys.append(('phase1', 'first_phase', str, 'hard'))
