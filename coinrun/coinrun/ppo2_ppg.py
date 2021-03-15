@@ -294,7 +294,7 @@ class Model(object):
 
         _train_pi = trainer.apply_gradients(grads_and_var_pi)
 
-        E_v = 5
+        E_v = 9
         v_params = [p for p in params if 'model_0' in p.name]
         grads_and_var_v = trainer_v.compute_gradients(v_loss, v_params)
 
