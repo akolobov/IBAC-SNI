@@ -228,6 +228,7 @@ class CnnPolicy(object):
                 self.h_pi =  tf.concat([act_condit_pi, act_invariant_pi], axis=1)
                 act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
                 self.adv_pi = get_predictor(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
+                self.v_pi = get_predictor(n_in=256,n_out=1)(self.h_pi)
 
         if Config.AGENT == 'ppo_diayn':
             # with tf.variable_scope("model", reuse=True) as scope:
@@ -442,8 +443,8 @@ class CnnPolicy(object):
                 a, v, v_i, neglogp, r_i  = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.skill_log_prob], {X: ob, Z_INT: skill_idx, Z: one_hot_skill})
                 return a, v, v_i, r_i, self.initial_state, neglogp
             elif Config.AGENT == 'ppo_goal':
-                a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {X: ob, Z: one_hot_skill})
-                return a, v, v_i, self.initial_state, neglogp
+                a, v, v_i, neglogp, u_t, z_t_1 = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], u_t, self.z_t_1], {X: ob, Z: one_hot_skill})
+                return a, v, v_i, self.initial_state, neglogp, u_t, z_t_1 
             elif Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})

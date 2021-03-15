@@ -223,8 +223,9 @@ class Model(object):
             approxkl_run = tf.constant(0.)
             clipfrac_run = tf.constant(0.)
 
-        if Config.AGENT == 'ppg':
-            adv_pred = tf.reduce_mean(input_tensor=tf.square(ADV - train_model.adv_pi))
+        adv_pred = tf.reduce_mean(input_tensor=tf.square(tf.stop_gradient(ADV) - train_model.adv_pi))
+        v_pred = tf.reduce_mean(input_tensor=tf.square(tf.stop_gradient(vpred) - train_model.v_pi))
+        bc = tf.reduce_mean(input_tensor=(tf.stop_gradient(OLDNEGLOGPAC)-neglogpac_train))
 
         params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
@@ -267,12 +268,14 @@ class Model(object):
         if Config.REP_LOSS_WEIGHT > 0:
             pi_loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + rep_loss*Config.REP_LOSS_WEIGHT  + adv_pred * 0.25
         else:
-            pi_loss = pg_loss - entropy * ent_coef + adv_pred * 0.25 #+ vf_coef*vf_loss
+            pi_loss = pg_loss - entropy * ent_coef + 0.25 * adv_pred #+ vf_coef*vf_loss
             v_loss =  vf_loss * vf_coef
+            aux_loss = 0.5 * v_pred + bc
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
             trainer_v = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
+            trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
         else:
             trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
             trainer_v = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
@@ -286,29 +289,28 @@ class Model(object):
         if max_grad_norm is not None:
             grads_pi, _grad_norm_pi = tf.clip_by_global_norm(grads_pi, max_grad_norm)
         grads_and_var_pi = list(zip(grads_pi, var_pi))
-
         tot_norm = tf.zeros((1,))
         for g,v in grads_and_var_pi:
             tot_norm += tf.norm(g)
         tot_norm = tf.reshape(tot_norm, [])
-
         _train_pi = trainer.apply_gradients(grads_and_var_pi)
 
         E_v = 9
         v_params = [p for p in params if 'model_0' in p.name]
         grads_and_var_v = trainer_v.compute_gradients(v_loss, v_params)
-
         grads_v, var_v = zip(*grads_and_var_v)
         if max_grad_norm is not None:
             grads_v, _grad_norm_v = tf.clip_by_global_norm(grads_v, max_grad_norm)
         grads_and_var_v = list(zip(grads_v, var_v))
-
-        tot_norm = tf.zeros((1,))
-        for g,v in grads_and_var_v:
-            tot_norm += tf.norm(g)
-        tot_norm = tf.reshape(tot_norm, [])
-
         _train_v =  trainer_v.apply_gradients(grads_and_var_v) 
+
+        # E_aux = 9
+        # grads_and_var_aux = trainer_aux.compute_gradients(aux_loss, pi_params)
+        # grads_aux, var_aux = zip(*grads_and_var_aux)
+        # if max_grad_norm is not None:
+        #     grads_aux, _grad_norm_aux = tf.clip_by_global_norm(grads_aux, max_grad_norm)
+        # grads_and_var_aux = list(zip(grads_aux, var_aux))
+        # _train_aux =  trainer_aux.apply_gradients(grads_and_var_aux) 
 
         
         
@@ -331,21 +333,17 @@ class Model(object):
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
             
-            if Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
-                return sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, tot_norm, _train_pi]+_train_v,
-                    td_map
-                )[:-(1+E_v)]
-            else:
-                res = sess.run(
-                    [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, _train_pi],
-                    td_map
-                )[:-1]
-                for i in range(E_v):
-                    _ = sess.run([_train_v],td_map)
-                return res
             
-        self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'gradient_norm']
+            pi_res = sess.run(
+                [pi_loss, _train_pi],
+                td_map
+            )[:-1]
+            for i in range(E_v):
+                v_res = sess.run([v_loss,_train_v],td_map)[:-1]
+            # import ipdb;ipdb.set_trace()
+            return pi_res[0],v_res[0]
+            
+        self.loss_names = ['policy_loss', 'value_loss']
 
         def save(save_path):
             ps = sess.run(params)

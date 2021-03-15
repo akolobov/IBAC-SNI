@@ -429,7 +429,7 @@ class Runner(AbstractEnvRunner):
 
 	def run(self, update_frac, z, pretrain=False):
 		# Here, we init the lists that will contain the mb of experiences
-		mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_rewards_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[],[]
+		mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_rewards_i, mb_dones, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1 = [],[],[],[],[],[],[],[],[], [], []
 		mb_states = []
 		epinfos = []
 
@@ -445,13 +445,15 @@ class Runner(AbstractEnvRunner):
 		for _ in range(self.nsteps):
 			# Given observations, get action value and neglopacs
 			# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-			actions, values, values_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			actions, values, values_i, self.states, neglogpacs, u_t, z_t_1 = self.model.step(self.obs,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
 			mb_values_i.append(values_i)
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
+			mb_u_t.append(u_t)
+			mb_z_t_1.append(z_t_1)
 
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
@@ -476,6 +478,8 @@ class Runner(AbstractEnvRunner):
 		mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
 		mb_infos = np.asarray(mb_infos, dtype=np.float32)
 		mb_dones = np.asarray(mb_dones, dtype=np.bool)
+		mb_u_t = np.asarray(mb_u_t, dtype=np.float32)
+		mb_z_t_1 = np.asarray(mb_z_t_1, dtype=np.float32)
 		last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
 		last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
 		mb_codes = []
