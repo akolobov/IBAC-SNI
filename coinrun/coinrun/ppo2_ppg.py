@@ -295,7 +295,6 @@ class Model(object):
         tot_norm = tf.reshape(tot_norm, [])
         _train_pi = trainer.apply_gradients(grads_and_var_pi)
 
-        E_v = 9
         v_params = [p for p in params if 'model_0' in p.name]
         grads_and_var_v = trainer_v.compute_gradients(v_loss, v_params)
         grads_v, var_v = zip(*grads_and_var_v)
@@ -314,7 +313,7 @@ class Model(object):
 
         
         
-        def train(lr, cliprange, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, obs, returns, masks, actions, infos, values, neglogpacs, states=None):
+        def train(lr, cliprange, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, obs, returns, masks, actions, infos, values, neglogpacs, states=None, train_target='pi'):
             values = values[:,self.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else values
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
@@ -333,15 +332,16 @@ class Model(object):
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
             
-            
-            pi_res = sess.run(
-                [pi_loss, _train_pi],
-                td_map
-            )[:-1]
-            for i in range(E_v):
+            if train_target == 'pi':
+                pi_res = sess.run(
+                    [pi_loss, _train_pi],
+                    td_map
+                )[:-1]
+                return pi_res[0]
+            elif train_target == 'value':
                 v_res = sess.run([v_loss,_train_v],td_map)[:-1]
-            # import ipdb;ipdb.set_trace()
-            return pi_res[0],v_res[0]
+                # import ipdb;ipdb.set_trace()
+                return v_res[0]
             
         self.loss_names = ['policy_loss', 'value_loss']
 
@@ -659,7 +659,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
         mean_cust_loss = 0
         inds = np.arange(nbatch)
-        for _ in range(noptepochs):
+        E_pi = 1
+        E_v = 9
+        for _ in range(E_pi):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
                 sess.run([model.train_model.train_dropout_assign_ops])
@@ -668,7 +670,17 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
-                mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices))
+                model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='pi')
+        for _ in range(E_v):
+            np.random.shuffle(inds)
+            for start in range(0, nbatch, nbatch_train):
+                sess.run([model.train_model.train_dropout_assign_ops])
+                end = start + nbatch_train
+                mbinds = inds[start:end]
+                
+                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
+                
+                model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='value')
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
         sess.run([model.train_model.run_dropout_assign_ops])
@@ -677,7 +689,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         train_t_total += train_elapsed
         mpi_print('update complete')
 
-        lossvals = np.mean(mblossvals, axis=0)
+        lossvals = 0 #np.mean(mblossvals, axis=0)
         tnow = time.time()
         fps = int(nbatch / (tnow - tstart))
 

@@ -517,7 +517,7 @@ class Runner(AbstractEnvRunner):
 
 			# add in gaussian noise for missed samples.
 			rand_arr_1 = np.random.normal(size=(32, 128))
-			rand_arr_2 = np.random.normal(size=(32, 5))
+			rand_arr_2 = np.random.normal(size=(32, Config.N_SKILLS))
 			u_t = np.concatenate([u_t, rand_arr_1])
 			z_t_1 = np.concatenate([rand_arr_1, z_t_1])
 			codes = np.concatenate([rand_arr_2, codes])
@@ -684,7 +684,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			packed = runner.run(update_frac=update/nupdates, z=curr_z)
 			z_iter += 1
 		else:
-			# sample new skill for current episodes
+			# sample new skill/code for current episodes
 			curr_z = np.random.randint(0, high=Config.N_SKILLS)
 			packed = runner.run(update_frac=update/nupdates, z=curr_z)
 			z_iter = 0
