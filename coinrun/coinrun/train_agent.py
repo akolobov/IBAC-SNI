@@ -14,7 +14,7 @@ DIAYN:
 python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --agent ppo_diayn -skilleps 4 -n_skills 5
 
 Goal conditioned PPO:
-python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 20 -disable_wandb
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 20
 
 # to change the distribution mode of the first and second phase:
 -phase1 exploration -phase2 hard
