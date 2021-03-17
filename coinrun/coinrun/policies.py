@@ -157,7 +157,17 @@ def cos_loss(p, z):
     z = tf.stop_gradient(z)
     p = tf.math.l2_normalize(p, axis=1)
     z = tf.math.l2_normalize(z, axis=1)
-    return -tf.reduce_sum(input_tensor=(p*z), axis=1)
+    dist = 2-2*tf.reduce_sum(input_tensor=(p*z), axis=1)
+    return dist
+
+def _compute_distance(x, y):
+    y = tf.stop_gradient(y)
+    x = tf.math.l2_normalize(x, axis=1)
+    y = tf.math.l2_normalize(y, axis=1)
+
+    dist = 2 - 2 * tf.reduce_sum(tf.reshape(x,(-1, 1, x.shape[1])) *
+                                tf.reshape(y,(1, -1, y.shape[1])), -1)
+    return dist
 
 class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
@@ -203,6 +213,14 @@ class CnnPolicy(object):
                 act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
                 self.adv_pi = get_predictor(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
                 self.v_pi = get_predictor(n_in=256,n_out=1)(self.h_pi)
+        elif Config.AGENT == 'ppg_ssl':
+            self.X_pi, self.processed_x_pi = observation_input(ob_space, None)
+            with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(processed_x,prefix='')
+                self.h_pi =  tf.concat([act_condit_pi, act_invariant_pi], axis=1)
+                act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
+                self.adv_pi = get_predictor(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
+                self.v_pi = get_predictor(n_in=256,n_out=1)(self.h_pi)
 
         if Config.AGENT == 'ppo_diayn':
             # with tf.variable_scope("model", reuse=True) as scope:
@@ -218,100 +236,88 @@ class CnnPolicy(object):
             # condition on current skill
             self.h = tf.concat([self.h, Z], axis=1)
 
-        elif Config.AGENT == 'ppo' and Config.CUSTOM_REP_LOSS and Config.REP_LOSS_WEIGHT > 0:
-            # create phi(s') using the same encoder               
-            with tf.variable_scope("model_0", reuse=tf.AUTO_REUSE) as scope:
-                first, second, _, _ = choose_cnn(tf.reshape(self.STATE_NCE,(-1,64,64,3)))
-                # ( m * K * N, hidden_dim)
-                h = tf.concat([first, second], axis=1)
-                latent_h = tf.transpose(tf.reshape( h ,(Config.REP_LOSS_M,-1,256)),perm=[1,0,2])
-                act_one_hot = tf.reshape(tf.one_hot(self.A_i[:,:,0],ac_space.n), (-1,ac_space.n))
-                phi_actions = tf.reshape(get_action_encoder(ac_space.n)( act_one_hot ), (-1,Config.REP_LOSS_M, 64) )
-            params = tf.compat.v1.trainable_variables()
-            self.RL_enc_param_names = [p.name for p in params if 'model_0/' in p.name]
-            self.target_enc_param_names = []
-            self.phi_traj_nce = []
-            for i in range(0, Config.POLICY_NHEADS):
-                with tf.variable_scope("model_%d"%(i), reuse=tf.AUTO_REUSE) as scope:
-                    if i > 0:
-                        h = tf.stop_gradient( latent_h )
-                    else:
-                        h = latent_h     
-                    params = tf.compat.v1.trainable_variables()
-                    self.target_enc_param_names.append([p.name for p in params if 'model_%d/'%i in p.name])
-                    # concat actions with random state embeddings
-                    # s_a_phi: n_batch x m x (n_rkhs_s + n_rkhs_a)
-                    s_a_phi = tf.concat([h,phi_actions],2)
-                    z_seq = get_seq_encoder()( s_a_phi )
-                    self.phi_traj_nce.append( z_seq )
-            
-            with tf.variable_scope("model_0", reuse=True) as scope:
+        elif Config.AGENT == 'ppg_ssl':
 
-                first, second, _, _ = choose_cnn(self.ANCH_NCE)
-                self.phi_anch_nce = tf.concat([first, second], axis=1)
+            y_online = self.h_pi
+            y_target = tf.stop_gradient(self.h)
 
-                first, second, _, _ = choose_cnn(self.STATE)
-                self.phi_STATE = tf.concat([first, second], axis=1)
-                # m: length of NCE rollout (sub-traj), n_heads: number of heads, n_rkhs: latent dim (256 usually)
+            dist = _compute_distance(y_online, y_target)
+            k_t = 1
+            vals, indx = tf.nn.top_k(-dist, k_t)
+            N_target = tf.squeeze(tf.gather(y_target, indx),1)
+            with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
+                v_online = get_predictor(n_out=256)(get_predictor(n_out=256)(y_online))
+                v_target = get_predictor(n_out=256)(get_predictor(n_out=256)(N_target))
+                r_online = get_predictor(n_out=256)(v_online)
 
-                self_sup_loss_type = 'BYOL' # infoNCE / BYOL 
-                # (m, n_heads, n_batch, n_rkhs)
+                self.rep_loss = tf.reduce_mean(cos_loss(r_online, v_target))
+            # with tf.variable_scope("model_0", reuse=True) as scope:
+
+            #     first, second, _, _ = choose_cnn(self.ANCH_NCE)
+            #     self.phi_anch_nce = tf.concat([first, second], axis=1)
+
+            #     first, second, _, _ = choose_cnn(self.STATE)
+            #     self.phi_STATE = tf.concat([first, second], axis=1)
+            #     # m: length of NCE rollout (sub-traj), n_heads: number of heads, n_rkhs: latent dim (256 usually)
+
+            #     self_sup_loss_type = 'BYOL' # infoNCE / BYOL 
+            #     # (m, n_heads, n_batch, n_rkhs)
                 
-                # z_seq: n_batch x n_heads x n_rkhs. Global representation of z_{t+1:t+m}^k= f( phi(s_t+1),..,phi(s_t+m) ) for head k. Uses 1x1 Conv2D then MLP on flattened features of size m*256x256
-                z_seq = tf.stack(self.phi_traj_nce)
-                # z_anch: n_batch x n_rkhs. Global representation of z_t^k=h( phi(s_t) ) for head k by passing into 256x256 MLP "h".
-                z_anch = get_anch_encoder()(self.phi_anch_nce)
+            #     # z_seq: n_batch x n_heads x n_rkhs. Global representation of z_{t+1:t+m}^k= f( phi(s_t+1),..,phi(s_t+m) ) for head k. Uses 1x1 Conv2D then MLP on flattened features of size m*256x256
+            #     z_seq = tf.stack(self.phi_traj_nce)
+            #     # z_anch: n_batch x n_rkhs. Global representation of z_t^k=h( phi(s_t) ) for head k by passing into 256x256 MLP "h".
+            #     z_anch = get_anch_encoder()(self.phi_anch_nce)
                 
-                self.rep_loss = 0.
-                if self_sup_loss_type == 'infoNCE':
-                    # outer_prod: n_loc x n_batch x n_batch
-                    # Use <z_t^k,z_{t+1:t+m}^k> as positives, 
-                    #     <z_t^k,z_{t+1:t+m}^k'> for k!=k' as negatives
-                    outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (256)**0.5
-                    for i in range(Config.POLICY_NHEADS):
-                        # Mask out the labels for the respective heads. mask=1 if samples from same head, 0 otherwise
-                        filter_ = tf.cast(tf.fill(tf.shape(self.LAB_NCE), i),tf.float32)
-                        mask = tf.math.equal(filter_ , self.LAB_NCE)
-                        mask_mul = tf.cast(tf.tile(tf.expand_dims(mask,-1),[1,1,tf.shape(z_anch)[0]]),tf.float32)
+            #     self.rep_loss = 0.
+            #     if self_sup_loss_type == 'infoNCE':
+            #         # outer_prod: n_loc x n_batch x n_batch
+            #         # Use <z_t^k,z_{t+1:t+m}^k> as positives, 
+            #         #     <z_t^k,z_{t+1:t+m}^k'> for k!=k' as negatives
+            #         outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (256)**0.5
+            #         for i in range(Config.POLICY_NHEADS):
+            #             # Mask out the labels for the respective heads. mask=1 if samples from same head, 0 otherwise
+            #             filter_ = tf.cast(tf.fill(tf.shape(self.LAB_NCE), i),tf.float32)
+            #             mask = tf.math.equal(filter_ , self.LAB_NCE)
+            #             mask_mul = tf.cast(tf.tile(tf.expand_dims(mask,-1),[1,1,tf.shape(z_anch)[0]]),tf.float32)
                         
-                        # n_batch x n_heads
-                        pos_scores = tf.transpose(tf.reduce_mean((mask_mul*outer_prod),2),(1,0))
-                        # n_batch x n_batch x n_heads
-                        neg_scores = tf.transpose(( (1.-mask_mul) * outer_prod) - (20 * mask_mul),(1,2,0))
-                        shape_neg = tf.shape(neg_scores)
-                        neg_scores = tf.reshape(neg_scores,(shape_neg[0],shape_neg[1]*shape_neg[2]))
-                        mask_neg = tf.reshape((1.-mask_mul),(shape_neg[0],shape_neg[1]*shape_neg[2]))
-                        neg_maxes = tf.reduce_max(neg_scores, 1, keepdims=True)
-                        # n_batch x 1
-                        neg_sumexp = tf.reduce_mean((mask_neg * tf.exp(neg_scores - neg_maxes)),1, keepdims=True)
-                        # n_batch x n_heads
-                        all_logsumexp = tf.log(tf.exp(pos_scores - neg_maxes) + neg_sumexp)
-                        pos_shiftexp = pos_scores - neg_maxes
-                        nce_scores = pos_shiftexp - all_logsumexp
+            #             # n_batch x n_heads
+            #             pos_scores = tf.transpose(tf.reduce_mean((mask_mul*outer_prod),2),(1,0))
+            #             # n_batch x n_batch x n_heads
+            #             neg_scores = tf.transpose(( (1.-mask_mul) * outer_prod) - (20 * mask_mul),(1,2,0))
+            #             shape_neg = tf.shape(neg_scores)
+            #             neg_scores = tf.reshape(neg_scores,(shape_neg[0],shape_neg[1]*shape_neg[2]))
+            #             mask_neg = tf.reshape((1.-mask_mul),(shape_neg[0],shape_neg[1]*shape_neg[2]))
+            #             neg_maxes = tf.reduce_max(neg_scores, 1, keepdims=True)
+            #             # n_batch x 1
+            #             neg_sumexp = tf.reduce_mean((mask_neg * tf.exp(neg_scores - neg_maxes)),1, keepdims=True)
+            #             # n_batch x n_heads
+            #             all_logsumexp = tf.log(tf.exp(pos_scores - neg_maxes) + neg_sumexp)
+            #             pos_shiftexp = pos_scores - neg_maxes
+            #             nce_scores = pos_shiftexp - all_logsumexp
 
-                        self.rep_loss = self.rep_loss +  1/Config.POLICY_NHEADS * tf.reduce_mean(nce_scores,1)
+            #             self.rep_loss = self.rep_loss +  1/Config.POLICY_NHEADS * tf.reduce_mean(nce_scores,1)
 
-                elif self_sup_loss_type == 'BYOL':
-                    # z_anch: n_envs x n_heads x 512
+            #     elif self_sup_loss_type == 'BYOL':
+            #         # z_anch: n_envs x n_heads x 512
 
-                    p_seq_0 = get_predictor(n_out=256)(z_seq[0])
-                    p_anch = get_predictor(n_out=256)(z_anch)
-                    # z_anch = tf.tile(tf.reshape(z_anch,(Config.NUM_ENVS,1,-1)),tf.constant([1,Config.POLICY_NHEADS,1],tf.int32))
-                    for i in range(1,Config.POLICY_NHEADS):
+            #         p_seq_0 = get_predictor(n_out=256)(z_seq[0])
+            #         p_anch = get_predictor(n_out=256)(z_anch)
+            #         # z_anch = tf.tile(tf.reshape(z_anch,(Config.NUM_ENVS,1,-1)),tf.constant([1,Config.POLICY_NHEADS,1],tf.int32))
+            #         for i in range(1,Config.POLICY_NHEADS):
                         
-                        # pred_Z = get_predictor(1)(tf.reshape(phi_traj_nce[:,i],(-1,256))) # count_latent_factors(Config.ENVIRONMENT)
-                        # rep_loss += 1/Config.POLICY_NHEADS * tf.reduce_mean(input_tensor=tf.square(pred_Z - tf.cast(tf.reshape(LATENT_FACTORS[:,i,:,i],(-1,1)),tf.float32) ))
+            #             # pred_Z = get_predictor(1)(tf.reshape(phi_traj_nce[:,i],(-1,256))) # count_latent_factors(Config.ENVIRONMENT)
+            #             # rep_loss += 1/Config.POLICY_NHEADS * tf.reduce_mean(input_tensor=tf.square(pred_Z - tf.cast(tf.reshape(LATENT_FACTORS[:,i,:,i],(-1,1)),tf.float32) ))
                         
-                        # mask: n_envs x n_heads
-                        # mask = tf.transpose(tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE))
-                        # p_seq and p_anch: n_pos_traj x 512
-                        p_seq_i = get_predictor(n_out=256)(z_seq[i])
+            #             # mask: n_envs x n_heads
+            #             # mask = tf.transpose(tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE))
+            #             # p_seq and p_anch: n_pos_traj x 512
+            #             p_seq_i = get_predictor(n_out=256)(z_seq[i])
 
-                        # z_seq_mask = tf.boolean_mask(z_seq,mask)
-                        # z_anch_mask = tf.boolean_mask(z_anch,mask)
+            #             # z_seq_mask = tf.boolean_mask(z_seq,mask)
+            #             # z_anch_mask = tf.boolean_mask(z_anch,mask)
                         
-                        byol_loss = ( cos_loss(p_seq_0,  z_seq[i]) + cos_loss(p_seq_i, z_seq[0]) ) / 2. + ( cos_loss(p_seq_i,  z_anch) + cos_loss(p_anch, z_seq[i]) ) / 2.
-                        self.rep_loss = self.rep_loss + 1/(Config.POLICY_NHEADS-1) * byol_loss
+            #             byol_loss = ( cos_loss(p_seq_0,  z_seq[i]) + cos_loss(p_seq_i, z_seq[0]) ) / 2. + ( cos_loss(p_seq_i,  z_anch) + cos_loss(p_anch, z_seq[i]) ) / 2.
+            #             self.rep_loss = self.rep_loss + 1/(Config.POLICY_NHEADS-1) * byol_loss
                         
         elif Config.AGENT == 'ppo_rnd':
             # with tf.variable_scope("model", reuse=True) as scope:
@@ -351,6 +357,20 @@ class CnnPolicy(object):
             self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, ord='euclidean')[0]))
                 
         if Config.AGENT == 'ppg':
+            with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
+                self.pd_train = [self.pdtype.pdfromlatent(self.h_pi, init_scale=0.01)[0]]
+               
+            with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):  
+                self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
+
+                # Plain Dropout version: Only fast updates / stochastic latent for VIB
+                self.pd_run = self.pd_train
+                self.vf_run = self.vf_train
+                
+
+                # For Dropout: Always change layer, so slow layer is never used
+                self.run_dropout_assign_ops = []
+        elif Config.AGENT == 'ppg_ssl':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
                 self.pd_train = [self.pdtype.pdfromlatent(self.h_pi, init_scale=0.01)[0]]
                
@@ -420,6 +440,10 @@ class CnnPolicy(object):
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
                 return a, v, self.initial_state, neglogp
             elif Config.AGENT == 'ppg':
+                head_idx = 0
+                a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob, self.X_pi: ob})
+                return a, v, self.initial_state, neglogp
+            elif Config.AGENT == 'ppg_ssl':
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob, self.X_pi: ob})
                 return a, v, self.initial_state, neglogp

@@ -158,6 +158,8 @@ class ConfigSingle(object):
 
         type_keys.append(('agent', 'agent', str, "ppo"))
 
+        type_keys.append(('disable_wandb', 'disable_wandb', int, 1))
+
         # Should the agent's velocity be painted in the upper left corner of observations.
         # 1/0 means True/False
         # PAINT_VEL_INFO = -1 uses smart defaulting -- will default to 1 if GAME_TYPE is 'standard' (CoinRun), 0 otherwise
