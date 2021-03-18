@@ -266,9 +266,9 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        pi_loss = pg_loss - entropy * ent_coef + 0.25 * adv_pred + Config.REP_LOSS_WEIGHT * train_model.rep_loss #+ vf_coef*vf_loss
+        pi_loss = pg_loss - entropy * ent_coef #+ 0.25 * adv_pred #+ vf_coef*vf_loss
         v_loss =  vf_loss * vf_coef
-        aux_loss = 0.5 * v_pred + bc
+        aux_loss = Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -301,13 +301,12 @@ class Model(object):
         grads_and_var_v = list(zip(grads_v, var_v))
         _train_v =  trainer_v.apply_gradients(grads_and_var_v) 
 
-        # E_aux = 9
-        # grads_and_var_aux = trainer_aux.compute_gradients(aux_loss, pi_params)
-        # grads_aux, var_aux = zip(*grads_and_var_aux)
-        # if max_grad_norm is not None:
-        #     grads_aux, _grad_norm_aux = tf.clip_by_global_norm(grads_aux, max_grad_norm)
-        # grads_and_var_aux = list(zip(grads_aux, var_aux))
-        # _train_aux =  trainer_aux.apply_gradients(grads_and_var_aux) 
+        grads_and_var_aux = trainer_aux.compute_gradients(aux_loss, pi_params)
+        grads_aux, var_aux = zip(*grads_and_var_aux)
+        if max_grad_norm is not None:
+            grads_aux, _grad_norm_aux = tf.clip_by_global_norm(grads_aux, max_grad_norm)
+        grads_and_var_aux = list(zip(grads_aux, var_aux))
+        _train_aux =  trainer_aux.apply_gradients(grads_and_var_aux) 
 
         
         
@@ -332,8 +331,10 @@ class Model(object):
                 return pi_res
             elif train_target == 'value':
                 v_res = sess.run([v_loss,_train_v],td_map)[:-1]
-                # import ipdb;ipdb.set_trace()
                 return v_res[0]
+            elif train_target == 'aux':
+                aux_res = sess.run([train_model.rep_loss,_train_aux],td_map)[:-1]
+                return aux_res[0]
             
         self.loss_names = ['policy_loss', 'rep_loss', 'value_loss']
 
@@ -659,6 +660,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         inds = np.arange(nbatch)
         E_pi = 1
         E_v = 9
+        E_aux = 1
         for _ in range(E_pi):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -679,6 +681,16 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
                 v_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='value')
+        for _ in range(E_aux):
+            np.random.shuffle(inds)
+            for start in range(0, nbatch, nbatch_train):
+                sess.run([model.train_model.train_dropout_assign_ops])
+                end = start + nbatch_train
+                mbinds = inds[start:end]
+                
+                slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
+                
+                rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='aux')
         # mblossvals.append([pi_loss_res, rep_loss_res, v_loss_res])
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
@@ -718,14 +730,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             mpi_print('total_timesteps', update*nbatch)
             mpi_print([epinfo['r'] for epinfo in epinfobuf10])
 
-            wandb.log({"ep_len_mean": ep_len_mean,
-                        "avg_value":avg_value,
-                        "custom_loss":mean_cust_loss,
-                        "eplenmean":ep_len_mean,
-                        "eprew":rew_mean_10,
-                        "eprew_eval":eval_rew_mean,
-                        "rep_loss":rep_loss_res,
-                        "custom_step":step})
+            wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
+                        "%s/avg_value"%(Config.ENVIRONMENT):avg_value,
+                        "%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
+                        "%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
+                        "%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
+                        "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
+                        "%s/rep_loss"%(Config.ENVIRONMENT):rep_loss_res,
+                        "%s/custom_step"%(Config.ENVIRONMENT):step})
 
             if len(mblossvals):
                 for (lossval, lossname) in zip(lossvals, model.loss_names):

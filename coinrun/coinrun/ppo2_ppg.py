@@ -1,6 +1,7 @@
 """
 This is a copy of PPO from openai/baselines (https://github.com/openai/baselines/blob/52255beda5f5c8760b0ae1f676aa656bb1a61f80/baselines/ppo2/ppo2.py) with some minor changes.
 """
+import wandb
 
 import time
 import joblib
@@ -626,6 +627,12 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         start_update = Config.RESTORE_STEP // nbatch
 
     tb_writer = TB_Writer(sess)
+
+    import os
+    os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
+    group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT)
+    wandb.init(project='procgen_generalization', entity='bmazoure', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
+
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
@@ -718,6 +725,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             mpi_print('fps', fps)
             mpi_print('total_timesteps', update*nbatch)
             mpi_print([epinfo['r'] for epinfo in epinfobuf10])
+
+            wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
+                        "%s/avg_value"%(Config.ENVIRONMENT):avg_value,
+                        "%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
+                        "%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
+                        "%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
+                        "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
+                        "%s/custom_step"%(Config.ENVIRONMENT):step})
 
             if len(mblossvals):
                 for (lossval, lossname) in zip(lossvals, model.loss_names):

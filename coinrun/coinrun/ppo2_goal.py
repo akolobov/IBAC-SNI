@@ -346,7 +346,7 @@ class Model(object):
 
 		p_t = tf.nn.log_softmax(tf.linalg.matmul(U_T, train_model.protos) / 0.1, axis=1)
 		curr_codes = sinkhorn(scores=tf.linalg.matmul(Z_T_1, tf.linalg.normalize(train_model.protos, ord='euclidean')[0]))
-		rep_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(curr_codes * p_t, axis=1))
+		rep_loss = tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(curr_codes * p_t, axis=1))
 		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + (rep_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef)
 
 		if Config.SYNC_FROM_ROOT:
@@ -789,7 +789,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                         "%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
                         "%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
                         "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
-                        "%s/rep_loss"%(Config.ENVIRONMENT):rep_loss_res,
+                        "%s/rep_loss"%(Config.ENVIRONMENT):rep_loss,
                         "%s/custom_step"%(Config.ENVIRONMENT):step})
 
 
