@@ -783,14 +783,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 					tb_writer.log_scalar(lossval, lossname, step=step)
 			mpi_print('----\n')
 
-			wandb.log({"ep_len_mean": ep_len_mean,
-						"avg_value":avg_value,
-						"custom_loss":mean_cust_loss,
-						"eplenmean":ep_len_mean,
-						"eprew":rew_mean_10,
-						"eprew_eval":eval_rew_mean,
-						"rep_loss":rep_loss,
-						"custom_step":step})
+			wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
+                        "%s/avg_value"%(Config.ENVIRONMENT):avg_value,
+                        "%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
+                        "%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
+                        "%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
+                        "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
+                        "%s/rep_loss"%(Config.ENVIRONMENT):rep_loss_res,
+                        "%s/custom_step"%(Config.ENVIRONMENT):step})
 
 
 		if can_save:
