@@ -1,7 +1,7 @@
 """
 This is a copy of PPO from openai/baselines (https://github.com/openai/baselines/blob/52255beda5f5c8760b0ae1f676aa656bb1a61f80/baselines/ppo2/ppo2.py) with some minor changes.
 """
-
+import wandb
 import time
 import joblib
 import numpy as np
@@ -376,8 +376,11 @@ class Model(object):
 			initialize()
 
 class Runner(AbstractEnvRunner):
-	def __init__(self, *, env, model, nsteps, gamma, lam):
+	def __init__(self, *, env, eval_env, model, nsteps, gamma, lam):
 		super().__init__(env=env, model=model, nsteps=nsteps)
+		self.eval_obs = np.zeros((self.nenv,) + eval_env.observation_space.shape, dtype=eval_env.observation_space.dtype.name)
+		self.eval_obs[:] = eval_env.reset()
+		self.eval_dones = [False for _ in range(self.nenv)]
 		self.lam = lam
 		self.gamma = gamma
 		# List of two element tuples containing state lists for procgen,
@@ -395,6 +398,7 @@ class Runner(AbstractEnvRunner):
 			total_timesteps = int(25e6)
 		elif Config.VERY_SHORT_TRAINING:
 			total_timesteps = int(5e6)
+		self.eval_env = eval_env
 		# create one-hot encoding array for all possible skills
 		a = np.array([x for x in range(Config.N_SKILLS)])
 		self.one_hot_skills = np.zeros((a.size, a.max()+1))
@@ -406,6 +410,7 @@ class Runner(AbstractEnvRunner):
 		mb_obs, mb_rewards, mb_actions, mb_values, mb_values_i, mb_rewards_i, mb_dones, mb_neglogpacs, mb_infos = [],[],[],[],[],[],[],[],[]
 		mb_states = []
 		epinfos = []
+		eval_epinfos = []
 
 		head_idx_current_batch = 0 #np.random.randint(0,Config.POLICY_NHEADS,1).item()
 	   
@@ -431,11 +436,16 @@ class Runner(AbstractEnvRunner):
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
-			
+			# eval for zero shot generalization
+			eval_actions, eval_values, eval_values_i, _, eval_states, eval_neglogpacs = self.model.step(self.eval_obs, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
 				if maybeepinfo: epinfos.append(maybeepinfo)
-				
+			
+			for info in self.eval_infos:
+				eval_maybeepinfo = info.get('episode')
+				if eval_maybeepinfo: eval_epinfos.append(eval_maybeepinfo)
 			mb_infos.append([[float(v) for k,v in info_.items() if k != 'episode'] for info_ in self.infos])
 			mb_rewards.append(rewards)
 			# normalize diayn rewards
@@ -500,7 +510,7 @@ class Runner(AbstractEnvRunner):
 		mb_returns_i = mb_advs_i + mb_values_i
 
 		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos)),
-			states_nce, anchors_nce, labels_nce, epinfos)
+			states_nce, anchors_nce, labels_nce, epinfos,  eval_epinfos)
 
 def sf01(arr):
 	"""
@@ -546,12 +556,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
 	utils.load_all_params(sess)
 
-	runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
+	runner = Runner(env=env, model=model, eval_env=eval_env, nsteps=nsteps, gamma=gamma, lam=lam)
 
 	epinfobuf10 = deque(maxlen=10)
 	epinfobuf100 = deque(maxlen=100)
+	eval_epinfobuf100 = deque(maxlen=100)
 	tfirststart = time.time()
 	active_ep_buf = epinfobuf100
+	eval_active_ep_buf = eval_epinfobuf100
 
 	nupdates = total_timesteps//nbatch
 	mean_rewards = []
@@ -579,6 +591,10 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	z_iter = 0
 	curr_z = np.random.randint(0, high=Config.N_SKILLS)
 	tb_writer = TB_Writer(sess)
+	import os
+	os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
+	group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT)
+	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	for update in range(start_update+1, nupdates+1):
 		assert nbatch % nminibatches == 0
 		nbatch_train = nbatch // nminibatches
@@ -598,7 +614,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			packed = runner.run(update_frac=update/nupdates, z=curr_z)
 			z_iter = 0
 
-		obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos = packed
+		obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos = packed
 		skill = np.reshape(skill, (-1, Config.N_SKILLS))
 		# reshape our augmented state vectors to match first dim of observation array
 		# (mb_size*num_envs, 64*64*RGB)
@@ -606,6 +622,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		avg_value = np.mean(values)
 		epinfobuf10.extend(epinfos)
 		epinfobuf100.extend(epinfos)
+		eval_epinfobuf100.extend(eval_epinfos)
 
 		run_elapsed = time.time() - run_tstart
 		run_t_total += run_elapsed
@@ -640,6 +657,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
 		if update % log_interval == 0 or update == 1:
 			step = update*nbatch
+			eval_rew_mean = utils.process_ep_buf(eval_active_ep_buf, tb_writer=tb_writer, suffix='_eval', step=step)
 			rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
 			ep_len_mean = np.nanmean([epinfo['l'] for epinfo in active_ep_buf])
 			
@@ -658,16 +676,28 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
 			mpi_print('eplenmean', ep_len_mean)
 			mpi_print('eprew', rew_mean_10)
+			mpi_print('eprew_eval', eval_rew_mean)
 			mpi_print('fps', fps)
 			mpi_print('total_timesteps', update*nbatch)
 			mpi_print([epinfo['r'] for epinfo in epinfobuf10])
 
+			rep_loss = 0
 			if len(mblossvals):
 				for (lossval, lossname) in zip(lossvals, model.loss_names):
+					if lossname == 'rep_loss':
+						rep_loss = lossval
 					mpi_print(lossname, lossval)
 					tb_writer.log_scalar(lossval, lossname, step=step)
 			mpi_print('----\n')
 
+		wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
+                        "%s/avg_value"%(Config.ENVIRONMENT):avg_value,
+                        "%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
+                        "%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
+                        "%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
+                        "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
+                        "%s/rep_loss"%(Config.ENVIRONMENT):rep_loss,
+                        "%s/custom_step"%(Config.ENVIRONMENT):step})
 		if can_save:
 			if save_interval and (update % save_interval == 0):
 				save_model()
