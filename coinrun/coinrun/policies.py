@@ -219,7 +219,7 @@ class CnnPolicy(object):
         elif Config.AGENT == 'ppg_ssl':
             self.X_pi, self.processed_x_pi = observation_input(ob_space, None)
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(self.processed_x_pi,prefix='')
+                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(processed_x,prefix='')
                 self.h_pi =  tf.concat([act_condit_pi, act_invariant_pi], axis=1)
                 act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
                 self.adv_pi = get_predictor(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
