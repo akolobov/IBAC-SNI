@@ -4,6 +4,7 @@ from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch
 from baselines.common.distributions import make_pdtype, _matching_fc
 from baselines.common.input import observation_input
 from coinrun.ppo2_goal import sinkhorn
+from coinrun.models import FiLM
 # TODO this is no longer supported in tfv2, so we'll need to
 # properly refactor where it's used if we want to use
 # some of the options (e.g. beta)
@@ -169,6 +170,8 @@ def _compute_distance(x, y):
                                 tf.reshape(y,(1, -1, y.shape[1])), -1)
     return dist
 
+
+
 class CnnPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
         self.pdtype = make_pdtype(ac_space)
@@ -216,7 +219,7 @@ class CnnPolicy(object):
         elif Config.AGENT == 'ppg_ssl':
             self.X_pi, self.processed_x_pi = observation_input(ob_space, None)
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(processed_x,prefix='')
+                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(self.processed_x_pi,prefix='')
                 self.h_pi =  tf.concat([act_condit_pi, act_invariant_pi], axis=1)
                 act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
                 self.adv_pi = get_predictor(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
@@ -240,6 +243,9 @@ class CnnPolicy(object):
 
             y_online = self.h_pi
             y_target = tf.stop_gradient(self.h)
+            act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
+            
+            # y_target = tf.squeeze(tf.squeeze(FiLM(widths=[256], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(y_target,1),1), act_one_hot]),1),1)
 
             dist = _compute_distance(y_online, y_target)
             k_t = 1

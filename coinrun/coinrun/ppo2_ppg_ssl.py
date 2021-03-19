@@ -225,8 +225,8 @@ class Model(object):
             clipfrac_run = tf.constant(0.)
 
         adv_pred = tf.reduce_mean(input_tensor=tf.square(tf.stop_gradient(ADV) - train_model.adv_pi))
-        v_pred = tf.reduce_mean(input_tensor=tf.square(tf.stop_gradient(vpred) - train_model.v_pi))
-        bc = tf.reduce_mean(input_tensor=(tf.stop_gradient(OLDNEGLOGPAC)-neglogpac_train))
+        # v_pred = tf.reduce_mean(input_tensor=tf.square(tf.stop_gradient(vpred) - train_model.v_pi))
+        # bc = tf.reduce_mean(input_tensor=(tf.stop_gradient(OLDNEGLOGPAC)-neglogpac_train))
 
         params = tf.compat.v1.trainable_variables()
         weight_params = [v for v in params if '/b' not in v.name]
@@ -266,7 +266,7 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        pi_loss = pg_loss - entropy * ent_coef #+ 0.25 * adv_pred #+ vf_coef*vf_loss
+        pi_loss = pg_loss - entropy * ent_coef + 0.25 * adv_pred #+ vf_coef*vf_loss
         v_loss =  vf_loss * vf_coef
         aux_loss = Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
 
@@ -325,7 +325,7 @@ class Model(object):
             
             if train_target == 'pi':
                 pi_res = sess.run(
-                    [pi_loss, train_model.rep_loss, _train_pi],
+                    [pi_loss, entropy, train_model.rep_loss, _train_pi],
                     td_map
                 )[:-1]
                 return pi_res
@@ -623,7 +623,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     import os
     os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
     group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT)
-    wandb.init(project='procgen_generalization', entity='bmazoure', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
+    wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
     
     for update in range(start_update+1, nupdates+1):
         assert nbatch % nminibatches == 0
@@ -670,7 +670,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
-                pi_loss_res, rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='pi')
+                pi_loss_res, entropy_loss_res, rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='pi')
         for _ in range(E_v):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -732,11 +732,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
             wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
                         "%s/avg_value"%(Config.ENVIRONMENT):avg_value,
-                        "%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
                         "%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
                         "%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
                         "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
                         "%s/rep_loss"%(Config.ENVIRONMENT):rep_loss_res,
+                        "%s/entropy"%(Config.ENVIRONMENT):entropy_loss_res,
                         "%s/custom_step"%(Config.ENVIRONMENT):step})
 
             if len(mblossvals):
