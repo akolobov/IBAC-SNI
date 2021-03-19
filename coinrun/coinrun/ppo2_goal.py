@@ -678,7 +678,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	import os
 	os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
 	group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT)
-	wandb.init(project='procgen_generalization', entity='bmazoure', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
+	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	for update in range(start_update+1, nupdates+1):
 		# update momentum encoder
 		params = tf.compat.v1.trainable_variables()
@@ -728,6 +728,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
 		mean_cust_loss = 0
 		inds = np.arange(nbatch)
+		E_ppo = noptepochs
+		E_clustering = 5
 		for _ in range(noptepochs):
 			np.random.shuffle(inds)
 			for start in range(0, nbatch, nbatch_train):
