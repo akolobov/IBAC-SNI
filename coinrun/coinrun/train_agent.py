@@ -16,6 +16,9 @@ python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --sho
 Goal conditioned PPO:
 python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 20
 
+RND:
+python3 -m coinrun.train_agent --env coinrun --run-id rnd --num-levels 0 --short --agent ppo_rnd
+
 # to change the distribution mode of the first and second phase:
 -phase1 exploration -phase2 hard
 -phase1 hard -phase2 exploration
