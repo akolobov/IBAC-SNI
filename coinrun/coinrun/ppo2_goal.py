@@ -346,8 +346,9 @@ class Model(object):
 
 		p_t = tf.nn.log_softmax(tf.linalg.matmul(U_T, train_model.protos) / 0.1, axis=1)
 		curr_codes = sinkhorn(scores=tf.linalg.matmul(Z_T_1, tf.linalg.normalize(train_model.protos, ord='euclidean')[0]))
-		rep_loss = tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(curr_codes * p_t, axis=1))
+		rep_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(curr_codes) * p_t, axis=1))
 		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + (rep_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef)
+		aux_loss = (rep_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef)
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -356,25 +357,28 @@ class Model(object):
 		
 		self.opt = trainer
 		grads_and_var = trainer.compute_gradients(loss, params)
-
-
-		
-		
 		grads, var = zip(*grads_and_var)
 		if max_grad_norm is not None:
 			grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
 		grads_and_var = list(zip(grads, var))
-
 		tot_norm = tf.zeros((1,))
 		for g,v in grads_and_var:
 			tot_norm += tf.norm(g)
 		tot_norm = tf.reshape(tot_norm, [])
-
 		_train = trainer.apply_gradients(grads_and_var)
 
+
+
+		grads_and_var_aux = trainer.compute_gradients(aux_loss, params)
+		grads_aux, var_aux = zip(*grads_and_var_aux)
+		if max_grad_norm is not None:
+			grads_aux, _grad_norm_aux = tf.clip_by_global_norm(grads_aux, max_grad_norm)
+		grads_and_var_aux = list(zip(grads_aux, var_aux))
+		_train_aux = trainer.apply_gradients(grads_and_var_aux)
+
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs, u_t, z_t_1, states=None):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs, u_t, z_t_1, states=None, train_target='policy'):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -389,11 +393,16 @@ class Model(object):
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
 			
-			
-			return sess.run(
-					[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, vf_loss_i, _train],
-					td_map
-				)[:-1]
+			if train_target=='policy':
+				return sess.run(
+						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, rep_loss, vf_loss_i, _train],
+						td_map
+					)[:-1]
+			elif train_target=='clustering':
+				return sess.run(
+						[_train],
+						td_map
+					)[:-1]
 			
 		self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'value_i_loss', 'gradient_norm']
 
@@ -677,8 +686,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	tb_writer = TB_Writer(sess)
 	import os
 	os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
-	group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT)
-	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
+	group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT)
+	name = "%s__%s__%f__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT,np.random.randint(100000000))
+	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	for update in range(start_update+1, nupdates+1):
 		# update momentum encoder
 		params = tf.compat.v1.trainable_variables()
@@ -729,7 +739,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		mean_cust_loss = 0
 		inds = np.arange(nbatch)
 		E_ppo = noptepochs
-		E_clustering = 5
+		E_clustering = 0
 		for _ in range(noptepochs):
 			np.random.shuffle(inds)
 			for start in range(0, nbatch, nbatch_train):
@@ -737,7 +747,15 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, u_t, z_t_1))
-				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices))
+				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices, train_target='policy'))
+		for _ in range(E_clustering):
+			np.random.shuffle(inds)
+			for start in range(0, nbatch, nbatch_train):
+				sess.run([model.train_model.train_dropout_assign_ops])
+				end = start + nbatch_train
+				mbinds = inds[start:end]
+				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, u_t, z_t_1))
+				model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices, train_target='clustering')
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])
