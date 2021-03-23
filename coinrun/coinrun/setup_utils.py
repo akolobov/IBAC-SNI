@@ -28,8 +28,8 @@ def restore_file(restore_id, load_key='default'):
 
         Config.parse_args_dict(sub_dict)
     print('Setting up threads')
-    # from coinrun.coinrunenv import init_args_and_threads
-    # init_args_and_threads(4)
+    from coinrun.coinrunenv import init_args_and_threads
+    init_args_and_threads(4)
 
 def setup_and_load(use_cmd_line_args=True, **kwargs):
     """
