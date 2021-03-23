@@ -261,14 +261,15 @@ def make_env(steps_per_env):
     return venv, venv_train, venv_adapt
 
 def main():
+    print('Parsing args')
     args = setup_utils.setup_and_load()
-
+    print('Setting up MPI')
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
 
     seed = int(time.time()) % 10000
     set_global_seeds(seed * 100 + rank)
-
+    print('Setting config')
     # coinrun version, allows you to specify how many GPUs you want this run to use
     #utils.setup_mpi_gpus()
 
