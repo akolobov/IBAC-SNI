@@ -108,8 +108,8 @@ def init_args_and_threads(cpu_count=4,
     print('set env config coinrun')
     int_args = np.array([int(is_high_difficulty), Config.NUM_LEVELS, int(Config.PAINT_VEL_INFO), Config.USE_DATA_AUGMENTATION, game_versions[Config.GAME_TYPE], Config.SET_SEED, rand_seed]).astype(np.int32)
 
-    # lib.initialize_args(int_args)
-    # lib.initialize_set_monitor_dir(logger.get_dir().encode('utf-8'), {'off': 0, 'first_env': 1, 'all': 2}[monitor_csv_policy])
+    lib.initialize_args(int_args)
+    lib.initialize_set_monitor_dir(logger.get_dir().encode('utf-8'), {'off': 0, 'first_env': 1, 'all': 2}[monitor_csv_policy])
     print('init args coinrun')
     global already_inited
     if already_inited:

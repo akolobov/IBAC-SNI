@@ -40,6 +40,9 @@ bash extract_and_plot.sh
 
 exploration only envs: coinrun caveflyer leaper jumper maze heist climber ninja
 all envs: bigfish bossfight caveflyer chaser climber coinrun dodgeball fruitbot heist jumper leaper maze miner ninja plunder starpilot
+
+To SSH into Dilbert node:
+cd /mnt/batch/tasks/workitems/job3244/job-1/task2/wd/.xt/cwd/rl_nexus
 """
 print('Importing packages')
 import os

@@ -247,11 +247,11 @@ class CnnPolicy(object):
             
             y_target = tf.squeeze(tf.squeeze(FiLM(widths=[256,256], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(y_target,1),1), act_one_hot]),1),1)
 
-            # dist = _compute_distance(y_online, y_target)
-            # k_t = 1
-            # vals, indx = tf.nn.top_k(-dist, k_t)
-            # N_target = tf.squeeze(tf.gather(y_target, indx),1)
-            N_target = y_target
+            dist = _compute_distance(y_online, y_target)
+            k_t = 1
+            vals, indx = tf.nn.top_k(-dist, k_t)
+            N_target = tf.squeeze(tf.gather(y_target, indx),1)
+            # N_target = y_target
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
                 v_online = get_predictor(n_out=256)(get_predictor(n_out=256)(y_online))
                 v_target = get_predictor(n_out=256)(get_predictor(n_out=256)(N_target))
