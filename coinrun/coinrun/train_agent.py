@@ -41,7 +41,7 @@ bash extract_and_plot.sh
 exploration only envs: coinrun caveflyer leaper jumper maze heist climber ninja
 all envs: bigfish bossfight caveflyer chaser climber coinrun dodgeball fruitbot heist jumper leaper maze miner ninja plunder starpilot
 """
-
+print('Importing packages')
 import os
 import copy
 import time
@@ -50,6 +50,7 @@ from mpi4py import MPI
 import tensorflow as tf
 from baselines.common import set_global_seeds
 from baselines.bench.monitor import ResultsWriter
+print('Imported baselines')
 from collections import deque
 import coinrun.main_utils as utils
 from coinrun import setup_utils, policies, wrappers
@@ -66,10 +67,12 @@ from gym3.types import (
     INTEGER_DTYPE_NAMES,
     FLOAT_DTYPE_NAMES,
 )
+print('Imported coinrun')
 from baselines.common.mpi_util import setup_mpi_gpus
 from gym.spaces import Box, Dict
 from procgen import ProcgenGym3Env
 from procgen import ProcgenEnv
+print('Imported procgen')
 
 from baselines.common.vec_env import (
     VecExtractDictObs,
