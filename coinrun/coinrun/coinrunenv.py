@@ -21,6 +21,8 @@ from coinrun.config import Config
 
 from mpi4py import MPI
 from baselines.common import mpi_util
+import coinrun.main_utils as utils
+mpi_print = utils.mpi_print
 
 # if the environment is crashing, try using the debug build to get
 # a readable stack trace
@@ -110,13 +112,13 @@ def init_args_and_threads(cpu_count=4,
 
     lib.initialize_args(int_args)
     lib.initialize_set_monitor_dir(logger.get_dir().encode('utf-8'), {'off': 0, 'first_env': 1, 'all': 2}[monitor_csv_policy])
-    print('init args coinrun')
+    mpi_print('init args coinrun')
     global already_inited
     if already_inited:
         return
-    print('setting MPI cpus')
+    mpi_print('setting MPI cpus')
     lib.init(cpu_count)
-    print('set MPI cpus')
+    mpi_print('set MPI cpus')
     already_inited = True
 
 @atexit.register
