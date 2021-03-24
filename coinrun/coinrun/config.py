@@ -72,6 +72,9 @@ class ConfigSingle(object):
         # Number of epochs before we switch skills for diayn or protoRL
         type_keys.append(('skilleps', 'skill_epochs', int, 2))
 
+        # Number of gradient updates made for clustering
+        type_keys.append(('goaleps', 'goal_epochs', int, 4))
+
         # Distribution mode for first phase of training
         type_keys.append(('phase1', 'first_phase', str, 'hard'))
 

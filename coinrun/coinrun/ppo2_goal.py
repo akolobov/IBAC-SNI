@@ -400,7 +400,7 @@ class Model(object):
 					)[:-1]
 			elif train_target=='clustering':
 				return sess.run(
-						[_train],
+						[_train_aux],
 						td_map
 					)[:-1]
 			
@@ -739,7 +739,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		mean_cust_loss = 0
 		inds = np.arange(nbatch)
 		E_ppo = noptepochs
-		E_clustering = 0
+		E_clustering = Config.GOAL_EPOCHS
 		for _ in range(noptepochs):
 			np.random.shuffle(inds)
 			for start in range(0, nbatch, nbatch_train):
