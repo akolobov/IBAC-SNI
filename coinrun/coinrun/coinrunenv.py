@@ -24,7 +24,7 @@ from baselines.common import mpi_util
 
 # if the environment is crashing, try using the debug build to get
 # a readable stack trace
-DEBUG = False
+DEBUG = True
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 game_versions = {
@@ -48,43 +48,43 @@ def build():
             sys.exit(1)
     MPI.COMM_WORLD.barrier()
 
-# build()
+build()
 
-# if DEBUG:
-#     lib_path = '.build-debug/coinrun_cpp_d'
-# else:
-#     lib_path = '.build-release/coinrun_cpp'
+if DEBUG:
+    lib_path = '.build-debug/coinrun_cpp_d'
+else:
+    lib_path = '.build-release/coinrun_cpp'
 
-# lib = npct.load_library(lib_path, os.path.dirname(__file__))
-# lib.init.argtypes = [c_int]
-# lib.get_NUM_ACTIONS.restype = c_int
-# lib.get_RES_W.restype = c_int
-# lib.get_RES_H.restype = c_int
-# lib.get_VIDEORES.restype = c_int
+lib = npct.load_library(lib_path, os.path.dirname(__file__))
+lib.init.argtypes = [c_int]
+lib.get_NUM_ACTIONS.restype = c_int
+lib.get_RES_W.restype = c_int
+lib.get_RES_H.restype = c_int
+lib.get_VIDEORES.restype = c_int
 
-# lib.vec_create.argtypes = [
-#     c_int,    # game_type
-#     c_int,    # nenvs
-#     c_int,    # lump_n
-#     c_bool,   # want_hires_render
-#     c_float,  # default_zoom
-#     ]
-# lib.vec_create.restype = c_int
+lib.vec_create.argtypes = [
+    c_int,    # game_type
+    c_int,    # nenvs
+    c_int,    # lump_n
+    c_bool,   # want_hires_render
+    c_float,  # default_zoom
+    ]
+lib.vec_create.restype = c_int
 
-# lib.vec_close.argtypes = [c_int]
+lib.vec_close.argtypes = [c_int]
 
-# lib.vec_step_async_discrete.argtypes = [c_int, npct.ndpointer(dtype=np.int32, ndim=1)]
+lib.vec_step_async_discrete.argtypes = [c_int, npct.ndpointer(dtype=np.int32, ndim=1)]
 
-# lib.initialize_args.argtypes = [npct.ndpointer(dtype=np.int32, ndim=1)]
-# lib.initialize_set_monitor_dir.argtypes = [c_char_p, c_int]
+lib.initialize_args.argtypes = [npct.ndpointer(dtype=np.int32, ndim=1)]
+lib.initialize_set_monitor_dir.argtypes = [c_char_p, c_int]
 
-# lib.vec_wait.argtypes = [
-#     c_int,
-#     npct.ndpointer(dtype=np.uint8, ndim=4),    # normal rgb
-#     npct.ndpointer(dtype=np.uint8, ndim=4),    # larger rgb for render()
-#     npct.ndpointer(dtype=np.float32, ndim=1),  # rew
-#     npct.ndpointer(dtype=np.bool, ndim=1),     # done
-#     ]
+lib.vec_wait.argtypes = [
+    c_int,
+    npct.ndpointer(dtype=np.uint8, ndim=4),    # normal rgb
+    npct.ndpointer(dtype=np.uint8, ndim=4),    # larger rgb for render()
+    npct.ndpointer(dtype=np.float32, ndim=1),  # rew
+    npct.ndpointer(dtype=np.bool, ndim=1),     # done
+    ]
 
 already_inited = False
 
@@ -108,14 +108,14 @@ def init_args_and_threads(cpu_count=4,
     print('set env config coinrun')
     int_args = np.array([int(is_high_difficulty), Config.NUM_LEVELS, int(Config.PAINT_VEL_INFO), Config.USE_DATA_AUGMENTATION, game_versions[Config.GAME_TYPE], Config.SET_SEED, rand_seed]).astype(np.int32)
 
-    # lib.initialize_args(int_args)
-    # lib.initialize_set_monitor_dir(logger.get_dir().encode('utf-8'), {'off': 0, 'first_env': 1, 'all': 2}[monitor_csv_policy])
+    lib.initialize_args(int_args)
+    lib.initialize_set_monitor_dir(logger.get_dir().encode('utf-8'), {'off': 0, 'first_env': 1, 'all': 2}[monitor_csv_policy])
     print('init args coinrun')
     global already_inited
     if already_inited:
         return
     print('setting MPI cpus')
-    # lib.init(cpu_count)
+    lib.init(cpu_count)
     print('set MPI cpus')
     already_inited = True
 
