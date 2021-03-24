@@ -108,6 +108,7 @@ def init_args_and_threads(cpu_count=4,
         mpi_rank, mpi_size = mpi_util.get_local_rank_size(MPI.COMM_WORLD)
         rand_seed = rand_seed - rand_seed % mpi_size + mpi_rank
     print('set env config coinrun')
+    mpi_print('testing MPI print')
     int_args = np.array([int(is_high_difficulty), Config.NUM_LEVELS, int(Config.PAINT_VEL_INFO), Config.USE_DATA_AUGMENTATION, game_versions[Config.GAME_TYPE], Config.SET_SEED, rand_seed]).astype(np.int32)
 
     lib.initialize_args(int_args)
