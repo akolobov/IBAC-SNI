@@ -302,7 +302,6 @@ def main():
     #print (env)
 
     mpi_print(Config.ENVIRONMENT)
-    exit()
     venv, venv_train, venv_adapt = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
     # import ipdb;ipdb.set_trace()
     observation_space = Dict(rgb=Box(shape=(64,64,3),low=0,high=255))
