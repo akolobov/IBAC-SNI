@@ -415,7 +415,7 @@ class CnnPolicy(object):
                     self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0]
                     self.vf_i_run = self.vf_i_train
                 if  (Config.CUSTOM_REP_LOSS and Config.AGENT == 'ppo'):
-                    self.vf_i_train = fc(self.phi_STATE, 'v_i', 1)[:, 0]
+                    self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0]
                     self.vf_i_run = self.vf_i_train
 
                 # Plain Dropout version: Only fast updates / stochastic latent for VIB
