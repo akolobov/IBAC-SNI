@@ -84,6 +84,7 @@ from baselines.common.vec_env import (
     VecEnvWrapper
 )
 
+mpi_print = utils.mpi_print
 
 import sys
 
@@ -298,7 +299,8 @@ def main():
     #env = utils.make_general_env(nenvs, seed=rank)
     #print (env)
 
-    print(Config.ENVIRONMENT)
+    mpi_print(Config.ENVIRONMENT)
+    exit()
     venv, venv_train, venv_adapt = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
 
     baseline_vec_eval = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=0, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
