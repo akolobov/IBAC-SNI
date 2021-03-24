@@ -72,7 +72,7 @@ from gym3.types import (
 )
 print('Imported coinrun')
 from baselines.common.mpi_util import setup_mpi_gpus
-from gym.spaces import Box, Dict
+from gym.spaces import Box, Dict, Discrete as DiscreteG
 from procgen import ProcgenGym3Env
 from procgen import ProcgenEnv
 print('Imported procgen')
@@ -170,14 +170,14 @@ class FakeEnv:
     :param env: gym3 environment to adapt
     """
 
-    def __init__(self, env, baselinevec):
+    def __init__(self, env, obs_space, act_space):
         self.env = env
         # for some reason these two are returned as none
         # so I passed in a baselinevec object and copied
         # over it's values
-        self.baseline_vec = baselinevec
-        self.observation_space = copy.deepcopy(baselinevec.observation_space)
-        self.action_space = copy.deepcopy(baselinevec.action_space)
+        # self.baseline_vec = baselinevec
+        self.observation_space = obs_space
+        self.action_space = act_space
         self.rewards = np.zeros(Config.NUM_ENVS)
         self.lengths = np.zeros(Config.NUM_ENVS)
         self.aux_rewards = None
@@ -225,25 +225,27 @@ class FakeEnv:
 
 # helper function to make env
 def make_env(steps_per_env):
+    observation_space = Dict(rgb=Box(shape=(64,64,3),low=0,high=255))
+    action_space = DiscreteG(15)
     if Config.FIRST_PHASE == 'exploration':
-        baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+        # baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
         gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
     else:
-        baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+        # baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
         gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
     if Config.SECOND_PHASE == 'exploration':
-        baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+        # baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
         gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
     elif Config.SECOND_PHASE != "None":
-        baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+        # baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
         gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
     else:
         baseline_vec_adapt = gym3_env_adapt = None
     
-    venv_train = FakeEnv(gym3_env_train, baseline_vec_train)
+    venv_train = FakeEnv(gym3_env_train, observation_space, action_space)
     venv_train = VecExtractDictObs(venv_train, "rgb")
     if Config.SECOND_PHASE != "None":
-        venv_adapt = FakeEnv(gym3_env_adapt, baseline_vec_adapt)   
+        venv_adapt = FakeEnv(gym3_env_adapt, observation_space, action_space)   
         venv_adapt = VecExtractDictObs(venv_adapt, "rgb")
     venv_train = VecMonitor(
         venv=venv_train, filename=None, keep_buf=100,
@@ -302,11 +304,12 @@ def main():
     mpi_print(Config.ENVIRONMENT)
     venv, venv_train, venv_adapt = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
     # import ipdb;ipdb.set_trace()
-
-    baseline_vec_eval = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=0, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+    observation_space = Dict(rgb=Box(shape=(64,64,3),low=0,high=255))
+    action_space = DiscreteG(15)
+    # baseline_vec_eval = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=0, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
     gym3_env_eval = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=0, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
 
-    venv_eval = FakeEnv(gym3_env_eval, baseline_vec_eval)
+    venv_eval = FakeEnv(gym3_env_eval, observation_space, action_space)
     venv_eval = VecExtractDictObs(venv_eval, "rgb")
     venv_eval = VecMonitor(
         venv=venv_eval, filename=None, keep_buf=100,
