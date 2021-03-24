@@ -266,7 +266,7 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        pi_loss = pg_loss - entropy * ent_coef + 0.25 * adv_pred + Config.REP_LOSS_WEIGHT * train_model.rep_loss #+ vf_coef*vf_loss
+        pi_loss = pg_loss - entropy * ent_coef + Config.REP_LOSS_WEIGHT * train_model.rep_loss #+ vf_coef*vf_loss
         v_loss =  vf_loss * vf_coef
         aux_loss = Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
 
