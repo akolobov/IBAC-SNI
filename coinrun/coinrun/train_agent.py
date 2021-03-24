@@ -300,8 +300,8 @@ def main():
     #print (env)
 
     mpi_print(Config.ENVIRONMENT)
-    exit()
     venv, venv_train, venv_adapt = make_env(total_timesteps//2) #switch "easy" -> "exploration" halfway
+    # import ipdb;ipdb.set_trace()
 
     baseline_vec_eval = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=0, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
     gym3_env_eval = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=0, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
