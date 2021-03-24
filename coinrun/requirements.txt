@@ -6,5 +6,6 @@ joblib==0.16
 gym3==0.3.3
 procgen==0.10.4
 ffmpeg-python==0.2.0
+cffi==1.14.3
 https://github.com/openai/baselines/archive/9ee399f5b20cd70ac0a871927a6cf043b478193f.zip
 wandb
