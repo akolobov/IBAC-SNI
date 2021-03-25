@@ -184,7 +184,7 @@ class CnnPolicy(object):
             processed_x = X
         else:
             X, processed_x = observation_input(ob_space, None)
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(32, 32, 64, 64, 3), name='Rep_Proc')
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(256, 32, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
             self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(128, Config.N_SKILLS)), trainable=True, name='Prototypes')
@@ -245,12 +245,12 @@ class CnnPolicy(object):
             y_target = tf.stop_gradient(self.h)
             act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
             
-            y_target = tf.squeeze(tf.squeeze(FiLM(widths=[256,256], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(y_target,1),1), act_one_hot]),1),1)
+            y_online = tf.squeeze(tf.squeeze(FiLM(widths=[256,256], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(y_online,1),1), act_one_hot]),1),1)
 
             dist = _compute_distance(y_online, y_online)
             k_t = 2
             vals, indx = tf.nn.top_k(-dist, k_t,sorted=True)
-            indx = indx[:,-1]
+            indx = indx[:,1]
             N_target = tf.gather(y_target, indx)
             # N_target = y_target
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):

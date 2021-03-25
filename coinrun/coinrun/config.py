@@ -73,7 +73,7 @@ class ConfigSingle(object):
         type_keys.append(('skilleps', 'skill_epochs', int, 2))
 
         # Number of gradient updates made for clustering
-        type_keys.append(('goaleps', 'goal_epochs', int, 4))
+        type_keys.append(('goaleps', 'goal_epochs', int, 1))
 
         # Distribution mode for first phase of training
         type_keys.append(('phase1', 'first_phase', str, 'hard'))

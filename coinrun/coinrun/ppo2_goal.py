@@ -248,8 +248,8 @@ class Model(object):
 		rep_loss = None
 		SKILLS = tf.compat.v1.placeholder(tf.float32, shape=[nbatch_train, Config.N_SKILLS], name='mb_skill')
 		A = train_model.pdtype.sample_placeholder([None])
-		U_T = tf.compat.v1.placeholder(tf.float32, [1024, 128])
-		Z_T_1 = tf.compat.v1.placeholder(tf.float32, [1024, 128])
+		U_T = tf.compat.v1.placeholder(tf.float32, [8192, 128])
+		Z_T_1 = tf.compat.v1.placeholder(tf.float32, [8192, 128])
 		ADV = tf.compat.v1.placeholder(tf.float32, [None])
 		ADV_2 = tf.compat.v1.placeholder(tf.float32, [None])
 		ADV = ADV + ADV_2
@@ -378,7 +378,7 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs, u_t, z_t_1, states=None, train_target='policy'):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, u_t, z_t_1, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs,  states=None, train_target='policy'):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -400,11 +400,11 @@ class Model(object):
 					)[:-1]
 			elif train_target=='clustering':
 				return sess.run(
-						[_train_aux],
+						[rep_loss, _train_aux],
 						td_map
 					)[:-1]
 			
-		self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'rep_loss', 'value_i_loss', 'gradient_norm']
+		self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'value_i_loss', 'gradient_norm']
 
 		def save(save_path):
 			ps = sess.run(params)
@@ -529,25 +529,23 @@ class Runner(AbstractEnvRunner):
 		last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
 		last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
 		mb_codes = []
-		obs_list = np.split(mb_obs, 8)
-		for curr_ob in obs_list:
-			# compute codes
-			codes, u_t, z_t_1 = self.model.compute_codes(curr_ob)
 
-			# add in gaussian noise for missed samples.
-			rand_arr_1 = np.random.normal(size=(32, 128))
-			rand_arr_2 = np.random.normal(size=(32, Config.N_SKILLS))
-			u_t = np.concatenate([u_t, rand_arr_1])
-			z_t_1 = np.concatenate([rand_arr_1, z_t_1])
-			codes = np.concatenate([rand_arr_2, codes])
-			mb_codes.append(codes)
-			mb_u_t.append(u_t)
-			mb_z_t_1.append(z_t_1)
+		# compute codes
+		codes, u_t, z_t_1 = self.model.compute_codes(mb_obs)
+
+		# add in gaussian noise for missed sample.
+		rand_arr_1 = np.random.normal(size=(32, 128))
+		rand_arr_2 = np.random.normal(size=(32, Config.N_SKILLS))
+		u_t = np.concatenate([u_t, rand_arr_1])
+		z_t_1 = np.concatenate([rand_arr_1, z_t_1])
+		codes = np.concatenate([rand_arr_2, codes])
+		mb_codes.append(codes)
+		mb_u_t.append(u_t)
+		mb_z_t_1.append(z_t_1)
 			
 		codes = np.asarray(mb_codes)
 		mb_u_t = np.asarray(mb_u_t, dtype=np.float32)
 		mb_z_t_1 = np.asarray(mb_z_t_1, dtype=np.float32)
-
 		codes = codes.reshape((-1, Config.N_SKILLS))
 		mb_u_t = mb_u_t.reshape((-1, 128))
 		mb_z_t_1 = mb_z_t_1.reshape((-1, 128))
@@ -574,9 +572,7 @@ class Runner(AbstractEnvRunner):
 		# discount/bootstrap off value fn
 		mb_returns = np.zeros_like(mb_rewards)
 		mb_advs = np.zeros_like(mb_rewards)
-		mb_advs_i = np.zeros_like(mb_rewards)
 		lastgaelam = 0
-		lastgaelam_i = 0
 		for t in reversed(range(self.nsteps)):
 			if t == self.nsteps - 1:
 				nextnonterminal = 1.0 - self.dones
@@ -586,7 +582,16 @@ class Runner(AbstractEnvRunner):
 				nextvalues = mb_values[t+1]
 			delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
 			mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
+			
+		mb_returns = mb_advs + mb_values
+		return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1)),
+			states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, mb_rewards_i, last_values_i)
 
+	def compute_intrinsic_returns(self, mb_rewards_i, mb_values_i, last_values_i, mb_dones):
+		mb_returns_i = np.zeros_like(mb_rewards_i)
+		mb_advs_i = np.zeros_like(mb_rewards_i)
+		lastgaelam_i = 0
+		for t in reversed(range(self.nsteps)):
 			"""
 			Intrinsic advantages
 			"""
@@ -599,12 +604,8 @@ class Runner(AbstractEnvRunner):
 
 			delta_i = mb_rewards_i[t] + self.gamma * nextvalues_i * nextnonterminal_i - mb_values_i[t]
 			mb_advs_i[t] = lastgaelam_i = delta_i + self.gamma * self.lam * nextnonterminal_i * lastgaelam_i
-			
-		mb_returns = mb_advs + mb_values
 		mb_returns_i = mb_advs_i + mb_values_i
-
-		return (*map(sf01, (mb_obs, mb_returns, mb_returns_i, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1)),
-			states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos)
+		return sf01(mb_returns_i)
 
 
 def sf01(arr):
@@ -715,7 +716,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			packed = runner.run(update_frac=update/nupdates, z=curr_z)
 			z_iter = 0
 
-		obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, infos, u_t, z_t_1, states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos = packed
+		obs, returns, masks, actions, values, values_i, skill, neglogpacs, infos, u_t, z_t_1,  states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, rewards_i, last_values_i, = packed
 		u_t = u_t.reshape((-1, 128))
 		z_t_1 = z_t_1.reshape((-1, 128))
 		skill = np.reshape(skill, (-1, Config.N_SKILLS))
@@ -740,22 +741,30 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		inds = np.arange(nbatch)
 		E_ppo = noptepochs
 		E_clustering = Config.GOAL_EPOCHS
+		mbinds = inds[0:nbatch_train]
+		dummy_slice = (arr[mbinds] for arr in (obs, returns, returns, masks, actions, values, values_i, skill, neglogpacs))
+
+		for _ in range(E_clustering):
+			rep_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, u_t, z_t_1, *dummy_slice, train_target='clustering')[0]
+		scale_i = np.log(1/rep_loss + 1)
+		returns_i = runner.compute_intrinsic_returns(rewards_i*scale_i, values_i.reshape(-1, 32), last_values_i, masks.reshape(-1, 32))
+
 		for _ in range(noptepochs):
 			np.random.shuffle(inds)
 			for start in range(0, nbatch, nbatch_train):
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, u_t, z_t_1))
-				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices, train_target='policy'))
-		for _ in range(E_clustering):
-			np.random.shuffle(inds)
-			for start in range(0, nbatch, nbatch_train):
-				sess.run([model.train_model.train_dropout_assign_ops])
-				end = start + nbatch_train
-				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, u_t, z_t_1))
-				model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices, train_target='clustering')
+				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
+				mblossvals.append(model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce,  u_t, z_t_1, *slices, train_target='policy'))
+		# for _ in range(E_clustering):
+		# 	np.random.shuffle(inds)
+		# 	for start in range(0, nbatch, nbatch_train):
+		# 		sess.run([model.train_model.train_dropout_assign_ops])
+		# 		end = start + nbatch_train
+		# 		mbinds = inds[start:end]
+		# 		slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs, u_t, z_t_1))
+		# 		model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *slices, train_target='clustering')
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])
@@ -794,11 +803,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			mpi_print('total_timesteps', update*nbatch)
 			mpi_print([epinfo['r'] for epinfo in epinfobuf10])
 			
-			rep_loss = 0
 			if len(mblossvals):
 				for (lossval, lossname) in zip(lossvals, model.loss_names):
-					if lossname == 'rep_loss':
-						rep_loss = lossval
 					mpi_print(lossname, lossval)
 					tb_writer.log_scalar(lossval, lossname, step=step)
 			mpi_print('----\n')
