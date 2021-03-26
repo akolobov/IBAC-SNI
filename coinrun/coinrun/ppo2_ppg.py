@@ -630,8 +630,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
     import os
     os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
-    group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT)
-    name = "%s__%s__%f__%d" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT,np.random.randint(100000000))
+    group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT)
+    name = "%s__%s__%f__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT,np.random.randint(100000000))
     wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
 
     for update in range(start_update+1, nupdates+1):
