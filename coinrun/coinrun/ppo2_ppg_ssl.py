@@ -180,6 +180,7 @@ class Model(object):
         OLDNEGLOGPAC = tf.compat.v1.placeholder(tf.float32, [None],name='OLDNEGLOGPAC')
         LR = tf.compat.v1.placeholder(tf.float32, [],name='LR')
         CLIPRANGE = tf.compat.v1.placeholder(tf.float32, [],name='CLIPRANGE')
+        STEP = tf.compat.v1.placeholder(tf.float32, [],name='STEP')
 
         # TD loss for critic
         # VF loss
@@ -266,9 +267,9 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        pi_loss = pg_loss - entropy * ent_coef #+ Config.REP_LOSS_WEIGHT * train_model.rep_loss #+ vf_coef*vf_loss
+        pi_loss = pg_loss - entropy * ent_coef + 0.25 * adv_pred #+ Config.REP_LOSS_WEIGHT * train_model.rep_loss #+ vf_coef*vf_loss
         v_loss =  vf_loss * vf_coef
-        aux_loss = Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
+        aux_loss = ((1-0.00368) ** STEP) * Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -310,7 +311,7 @@ class Model(object):
 
         
         
-        def train(lr, cliprange, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, obs, returns, masks, actions, infos, values, neglogpacs, states=None, train_target='pi'):
+        def train(lr, cliprange, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, obs, returns, masks, actions, infos, values, neglogpacs, step, states=None, train_target='pi'):
             values = values[:,self.head_idx_current_batch] if Config.CUSTOM_REP_LOSS else values
             advs = returns - values
             adv_mean = np.mean(advs, axis=0, keepdims=True)
@@ -318,7 +319,7 @@ class Model(object):
             advs = (advs - adv_mean) / (adv_std + 1e-8)
             
             td_map = {train_model.X:obs, train_model.A:actions, ADV:advs, R:returns, LR:lr, train_model.X_pi:obs,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, STEP:step}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
@@ -671,7 +672,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
-                pi_loss_res, entropy_loss_res, rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='pi')
+                pi_loss_res, entropy_loss_res, rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, step=update, train_target='pi')
         for _ in range(E_v):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -681,7 +682,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
-                v_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='value')
+                v_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, step=update, train_target='value')
         for _ in range(E_aux):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -691,7 +692,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
-                rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, train_target='aux')
+                rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, step=update, train_target='aux')
         # mblossvals.append([pi_loss_res, rep_loss_res, v_loss_res])
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
