@@ -269,7 +269,7 @@ class Model(object):
 
         pi_loss = pg_loss - entropy * ent_coef + 0.25 * adv_pred #+ Config.REP_LOSS_WEIGHT * train_model.rep_loss #+ vf_coef*vf_loss
         v_loss =  vf_loss * vf_coef
-        aux_loss = ((1-0.00368) ** STEP) * Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
+        aux_loss = ((1-0.0368) ** STEP) * Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -662,7 +662,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         inds = np.arange(nbatch)
         E_pi = 1
         E_v = 9
-        E_aux = 1
+        E_aux = 3
         for _ in range(E_pi):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):

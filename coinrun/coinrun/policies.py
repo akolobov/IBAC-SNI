@@ -248,7 +248,7 @@ class CnnPolicy(object):
             y_online = tf.squeeze(tf.squeeze(FiLM(widths=[256,256], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(y_online,1),1), act_one_hot]),1),1)
 
             dist = _compute_distance(y_online, y_online)
-            k_t = 3
+            k_t = 5
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
             
             # N_target = y_target
