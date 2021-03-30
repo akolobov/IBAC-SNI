@@ -349,6 +349,7 @@ class Model(object):
 		rep_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(curr_codes) * p_t, axis=1))
 		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + (rep_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef)
 		aux_loss = (rep_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef)
+		# import ipdb;ipdb.set_trace()
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)

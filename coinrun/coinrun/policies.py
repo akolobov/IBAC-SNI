@@ -4,7 +4,7 @@ from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch
 from baselines.common.distributions import make_pdtype, _matching_fc
 from baselines.common.input import observation_input
 from coinrun.ppo2_goal import sinkhorn
-from coinrun.models import FiLM
+from coinrun.models import FiLM, TemporalBlock
 # TODO this is no longer supported in tfv2, so we'll need to
 # properly refactor where it's used if we want to use
 # some of the options (e.g. beta)
@@ -141,6 +141,13 @@ def get_online_predictor():
     h = tf.keras.Model(inputs, p3)
     return h
 
+def get_time_conv():
+    def h(x):
+        x = tf.layers.Conv1D(128,32,8, activation='relu')(x)
+        x = tf.layers.Conv1D(256,16,2, activation='relu')(x)
+        x = tf.layers.Conv1D(128,6,2, activation='relu')(x)
+        return x
+    return h
 
 def tanh_clip(x, clip_val=20.):
     '''
@@ -240,7 +247,9 @@ class CnnPolicy(object):
             self.h = tf.concat([self.h, Z], axis=1)
 
         elif Config.AGENT == 'ppg_ssl':
-
+            """
+            MYOW part
+            """
             y_online = self.h_pi
             y_target = tf.stop_gradient(self.h)
             act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
@@ -266,73 +275,32 @@ class CnnPolicy(object):
                 r_target = get_linear_layer(n_out=256)(v_target)
 
                 self.rep_loss += ( tf.reduce_mean(cos_loss(r_online, v_target) + cos_loss(r_target, v_online)) ) / k_t
-            # with tf.variable_scope("model_0", reuse=True) as scope:
 
-            #     first, second, _, _ = choose_cnn(self.ANCH_NCE)
-            #     self.phi_anch_nce = tf.concat([first, second], axis=1)
-
-            #     first, second, _, _ = choose_cnn(self.STATE)
-            #     self.phi_STATE = tf.concat([first, second], axis=1)
-            #     # m: length of NCE rollout (sub-traj), n_heads: number of heads, n_rkhs: latent dim (256 usually)
-
-            #     self_sup_loss_type = 'BYOL' # infoNCE / BYOL 
-            #     # (m, n_heads, n_batch, n_rkhs)
+            """
+            Clustering part
+            """
+            obs_cluster = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+            
+            with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
+                # h_codes: n_batch x n_t x n_rkhs
+                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[Config.NUM_STEPS,Config.NUM_ENVS,-1]),(1,0,2))
+                tblock = get_time_conv() #TemporalBlock(128, 2, 1, 1, 0.)
+                seq = tblock(self.h_codes)[:,0,:]
+                z_t = get_linear_layer(n_in=128,n_out=128)(seq)
                 
-            #     # z_seq: n_batch x n_heads x n_rkhs. Global representation of z_{t+1:t+m}^k= f( phi(s_t+1),..,phi(s_t+m) ) for head k. Uses 1x1 Conv2D then MLP on flattened features of size m*256x256
-            #     z_seq = tf.stack(self.phi_traj_nce)
-            #     # z_anch: n_batch x n_rkhs. Global representation of z_t^k=h( phi(s_t) ) for head k by passing into 256x256 MLP "h".
-            #     z_anch = get_anch_encoder()(self.phi_anch_nce)
+                self.u_t = get_online_predictor()(z_t)
                 
-            #     self.rep_loss = 0.
-            #     if self_sup_loss_type == 'infoNCE':
-            #         # outer_prod: n_loc x n_batch x n_batch
-            #         # Use <z_t^k,z_{t+1:t+m}^k> as positives, 
-            #         #     <z_t^k,z_{t+1:t+m}^k'> for k!=k' as negatives
-            #         outer_prod = tanh_clip( tf.einsum("ijk,lk->jil",z_seq,z_anch) ) / (256)**0.5
-            #         for i in range(Config.POLICY_NHEADS):
-            #             # Mask out the labels for the respective heads. mask=1 if samples from same head, 0 otherwise
-            #             filter_ = tf.cast(tf.fill(tf.shape(self.LAB_NCE), i),tf.float32)
-            #             mask = tf.math.equal(filter_ , self.LAB_NCE)
-            #             mask_mul = tf.cast(tf.tile(tf.expand_dims(mask,-1),[1,1,tf.shape(z_anch)[0]]),tf.float32)
-                        
-            #             # n_batch x n_heads
-            #             pos_scores = tf.transpose(tf.reduce_mean((mask_mul*outer_prod),2),(1,0))
-            #             # n_batch x n_batch x n_heads
-            #             neg_scores = tf.transpose(( (1.-mask_mul) * outer_prod) - (20 * mask_mul),(1,2,0))
-            #             shape_neg = tf.shape(neg_scores)
-            #             neg_scores = tf.reshape(neg_scores,(shape_neg[0],shape_neg[1]*shape_neg[2]))
-            #             mask_neg = tf.reshape((1.-mask_mul),(shape_neg[0],shape_neg[1]*shape_neg[2]))
-            #             neg_maxes = tf.reduce_max(neg_scores, 1, keepdims=True)
-            #             # n_batch x 1
-            #             neg_sumexp = tf.reduce_mean((mask_neg * tf.exp(neg_scores - neg_maxes)),1, keepdims=True)
-            #             # n_batch x n_heads
-            #             all_logsumexp = tf.log(tf.exp(pos_scores - neg_maxes) + neg_sumexp)
-            #             pos_shiftexp = pos_scores - neg_maxes
-            #             nce_scores = pos_shiftexp - all_logsumexp
-
-            #             self.rep_loss = self.rep_loss +  1/Config.POLICY_NHEADS * tf.reduce_mean(nce_scores,1)
-
-            #     elif self_sup_loss_type == 'BYOL':
-            #         # z_anch: n_envs x n_heads x 512
-
-            #         p_seq_0 = get_predictor(n_out=256)(z_seq[0])
-            #         p_anch = get_predictor(n_out=256)(z_anch)
-            #         # z_anch = tf.tile(tf.reshape(z_anch,(Config.NUM_ENVS,1,-1)),tf.constant([1,Config.POLICY_NHEADS,1],tf.int32))
-            #         for i in range(1,Config.POLICY_NHEADS):
-                        
-            #             # pred_Z = get_predictor(1)(tf.reshape(phi_traj_nce[:,i],(-1,256))) # count_latent_factors(Config.ENVIRONMENT)
-            #             # rep_loss += 1/Config.POLICY_NHEADS * tf.reduce_mean(input_tensor=tf.square(pred_Z - tf.cast(tf.reshape(LATENT_FACTORS[:,i,:,i],(-1,1)),tf.float32) ))
-                        
-            #             # mask: n_envs x n_heads
-            #             # mask = tf.transpose(tf.math.equal(tf.constant(np.ones(shape=(Config.POLICY_NHEADS,Config.NUM_ENVS))*i,dtype=tf.float32) , train_model.LAB_NCE))
-            #             # p_seq and p_anch: n_pos_traj x 512
-            #             p_seq_i = get_predictor(n_out=256)(z_seq[i])
-
-            #             # z_seq_mask = tf.boolean_mask(z_seq,mask)
-            #             # z_anch_mask = tf.boolean_mask(z_anch,mask)
-                        
-            #             byol_loss = ( cos_loss(p_seq_0,  z_seq[i]) + cos_loss(p_seq_i, z_seq[0]) ) / 2. + ( cos_loss(p_seq_i,  z_anch) + cos_loss(p_anch, z_seq[i]) ) / 2.
-            #             self.rep_loss = self.rep_loss + 1/(Config.POLICY_NHEADS-1) * byol_loss
+            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
+                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[Config.NUM_STEPS,Config.NUM_ENVS,-1]),(1,0,2))
+                tblock = get_time_conv() #TemporalBlock(128, 2, 1, 1, 0.)
+                target_seq = tblock(target_h_codes)[:,0,:]
+                self.z_t_1 = get_linear_layer(n_in=128,n_out=128)(target_seq)
+            self.z_t_1 = tf.linalg.normalize(self.z_t_1, ord='euclidean')[0]
+            self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, ord='euclidean')[0]))
+            
+            
                         
         elif Config.AGENT == 'ppo_rnd':
             # with tf.variable_scope("model", reuse=True) as scope:

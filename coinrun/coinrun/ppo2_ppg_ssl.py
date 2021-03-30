@@ -175,6 +175,8 @@ class Model(object):
         # HEAD_IDX = tf.compat.v1.placeholder(tf.int32, [None])
         LATENT_FACTORS = train_model.pdtype.sample_placeholder([Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS,count_latent_factors(Config.ENVIRONMENT)],name='LATENT_FACTORS')
         ADV = tf.compat.v1.placeholder(tf.float32, [None],name='ADV')
+        U_T = tf.compat.v1.placeholder(tf.float32, [None, 256, 128])
+        Z_T_1 = tf.compat.v1.placeholder(tf.float32, [None, 256, 128])
         R = tf.compat.v1.placeholder(tf.float32, [None],name='R')
         R_NCE = tf.compat.v1.placeholder(tf.float32, [Config.REP_LOSS_M,Config.POLICY_NHEADS,Config.NUM_ENVS],name='R_NCE')
         OLDNEGLOGPAC = tf.compat.v1.placeholder(tf.float32, [None],name='OLDNEGLOGPAC')
@@ -267,9 +269,17 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        pi_loss = pg_loss - entropy * ent_coef + 0.25 * adv_pred #+ Config.REP_LOSS_WEIGHT * train_model.rep_loss #+ vf_coef*vf_loss
+        """"
+        Sinkhorn clustering of state sequences
+        """
+
+        p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / 0.1, axis=1)
+        cluster_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
+
+        #+ 0.25 * adv_pred
+        pi_loss = pg_loss - entropy * ent_coef  + Config.REP_LOSS_WEIGHT * train_model.rep_loss + Config.REP_LOSS_WEIGHT * cluster_loss #+ vf_coef*vf_loss
         v_loss =  vf_loss * vf_coef
-        aux_loss = ((1-0.0368) ** STEP) * Config.REP_LOSS_WEIGHT * train_model.rep_loss  #0.5 * v_pred + bc
+        aux_loss = ((1-0.0368) ** STEP) * Config.REP_LOSS_WEIGHT * train_model.rep_loss + Config.REP_LOSS_WEIGHT * cluster_loss  #0.5 * v_pred + bc
 
         if Config.SYNC_FROM_ROOT:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -317,16 +327,16 @@ class Model(object):
             adv_mean = np.mean(advs, axis=0, keepdims=True)
             adv_std = np.std(advs, axis=0, keepdims=True)
             advs = (advs - adv_mean) / (adv_std + 1e-8)
-            
+            # import ipdb;ipdb.set_trace()
             td_map = {train_model.X:obs, train_model.A:actions, ADV:advs, R:returns, LR:lr, train_model.X_pi:obs,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, STEP:step}
+                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, STEP:step, train_model.REP_PROC:states_nce}
             if states is not None:
                 td_map[train_model.S] = states
                 td_map[train_model.M] = masks
             
             if train_target == 'pi':
                 pi_res = sess.run(
-                    [pi_loss, entropy, train_model.rep_loss, _train_pi],
+                    [pi_loss, entropy, train_model.rep_loss, cluster_loss, _train_pi],
                     td_map
                 )[:-1]
                 return pi_res
@@ -334,8 +344,8 @@ class Model(object):
                 v_res = sess.run([v_loss,_train_v],td_map)[:-1]
                 return v_res[0]
             elif train_target == 'aux':
-                aux_res = sess.run([train_model.rep_loss,_train_aux],td_map)[:-1]
-                return aux_res[0]
+                aux_res = sess.run([train_model.rep_loss, cluster_loss, _train_aux],td_map)[:-1]
+                return aux_res
             
         self.loss_names = ['policy_loss', 'rep_loss', 'value_loss']
 
@@ -541,7 +551,7 @@ class Runner(AbstractEnvRunner):
             mb_returns = mb_advs + mb_values
         # import ipdb;ipdb.set_trace()
         return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs, mb_infos)),
-            states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, epinfos, eval_epinfos)
+            mb_obs, anchors_nce, labels_nce, rewards_nce, infos_nce, epinfos, eval_epinfos)
 
 def sf01(arr):
     """
@@ -662,7 +672,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         inds = np.arange(nbatch)
         E_pi = 1
         E_v = 9
-        E_aux = 3
+        E_aux = 1
         for _ in range(E_pi):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -672,7 +682,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
-                pi_loss_res, entropy_loss_res, rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, step=update, train_target='pi')
+                pi_loss_res, entropy_loss_res, rep_loss_res, cluster_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, step=update, train_target='pi')
         for _ in range(E_v):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
@@ -692,7 +702,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
                 
-                rep_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, step=update, train_target='aux')
+                rep_loss_res, cluster_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, rewards_nce, infos_nce, *slices, step=update, train_target='aux')
         # mblossvals.append([pi_loss_res, rep_loss_res, v_loss_res])
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
@@ -739,6 +749,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                         "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
                         "%s/rep_loss"%(Config.ENVIRONMENT):rep_loss_res,
                         "%s/entropy"%(Config.ENVIRONMENT):entropy_loss_res,
+                        "%s/cluster_loss"%(Config.ENVIRONMENT):cluster_loss_res,
                         "%s/custom_step"%(Config.ENVIRONMENT):step})
 
             if len(mblossvals):
