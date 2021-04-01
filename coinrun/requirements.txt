@@ -12,3 +12,4 @@ protobuf==3.14.0
 psutil==5.7.2
 https://github.com/openai/baselines/archive/9ee399f5b20cd70ac0a871927a6cf043b478193f.zip
 wandb
+sklearn

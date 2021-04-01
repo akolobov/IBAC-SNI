@@ -133,19 +133,22 @@ def get_linear_layer(n_in=256,n_out=128):
     h = tf.keras.Model(inputs, p)
     return h
 
-def get_online_predictor():
-    inputs = tf.keras.layers.Input((128,))
+def get_online_predictor(n_in=128,n_out=128):
+    inputs = tf.keras.layers.Input((n_in,))
     p = tf.keras.layers.Dense(128, activation='relu')(inputs)
     p2 = tf.keras.layers.Dense(512, activation='relu')(p)
-    p3 = tf.keras.layers.Dense(128)(p2)
+    p3 = tf.keras.layers.Dense(n_out)(p2)
     h = tf.keras.Model(inputs, p3)
     return h
 
 def get_time_conv():
     def h(x):
-        x = tf.layers.Conv1D(128,32,8, activation='relu')(x)
-        x = tf.layers.Conv1D(256,16,2, activation='relu')(x)
-        x = tf.layers.Conv1D(128,6,2, activation='relu')(x)
+        # T=256
+        # x = tf.layers.Conv1D(128,32,8, activation='relu')(x)
+        # x = tf.layers.Conv1D(256,16,2, activation='relu')(x)
+        # x = tf.layers.Conv1D(128,6,2, activation='relu')(x)
+        x = tf.layers.Conv1D(128,4,2, activation='relu')(x)
+        x = tf.layers.Conv1D(128,3,2, activation=None)(x)
         return x
     return h
 
@@ -191,7 +194,8 @@ class CnnPolicy(object):
             processed_x = X
         else:
             X, processed_x = observation_input(ob_space, None)
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(256, 32, 64, 64, 3), name='Rep_Proc')
+            TRAIN_NUM_STEPS = Config.NUM_STEPS//16
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(TRAIN_NUM_STEPS+1, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
             self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(128, Config.N_SKILLS)), trainable=True, name='Prototypes')
@@ -250,57 +254,57 @@ class CnnPolicy(object):
             """
             MYOW part
             """
-            y_online = self.h_pi
-            y_target = tf.stop_gradient(self.h)
-            act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
+            # y_online = self.h_pi
+            # y_target = tf.stop_gradient(self.h)
+            # act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
             
-            y_online = tf.squeeze(tf.squeeze(FiLM(widths=[256,256], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(y_online,1),1), act_one_hot]),1),1)
+            # y_online = tf.squeeze(tf.squeeze(FiLM(widths=[256,256], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(y_online,1),1), act_one_hot]),1),1)
 
-            dist = _compute_distance(y_online, y_online)
-            k_t = 5
-            vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
+            # dist = _compute_distance(y_online, y_online)
+            # k_t = 5
+            # vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
             
-            # N_target = y_target
-            with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
-                v_online_net = get_predictor(n_out=256)
-                v_target_net = get_predictor(n_out=256)
-                v_online = v_online_net(y_online)
+            # # N_target = y_target
+            # with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
+            #     v_online_net = get_predictor(n_out=256)
+            #     v_target_net = get_predictor(n_out=256)
+            #     v_online = v_online_net(y_online)
 
-            self.rep_loss = 0
-            for k in range(k_t):
-                indx2 = indx[:,k+1]
-                N_target = tf.gather(y_target, indx2)
-                v_target = v_target_net(N_target)
-                r_online = get_linear_layer(n_out=256)(v_online)
-                r_target = get_linear_layer(n_out=256)(v_target)
+            self.rep_loss = tf.constant([0.],dtype=tf.float32)
+            # for k in range(k_t):
+            #     indx2 = indx[:,k+1]
+            #     N_target = tf.gather(y_target, indx2)
+            #     v_target = v_target_net(N_target)
+            #     r_online = get_linear_layer(n_out=256)(v_online)
+            #     r_target = get_linear_layer(n_out=256)(v_target)
 
-                self.rep_loss += ( tf.reduce_mean(cos_loss(r_online, v_target) + cos_loss(r_target, v_online)) ) / k_t
+            #     self.rep_loss += ( tf.reduce_mean(cos_loss(r_online, v_target) + cos_loss(r_target, v_online)) ) / k_t
 
             """
             Clustering part
             """
-            obs_cluster = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+            num_steps = 10
+            SK_INPUT = REP_PROC[:num_steps]
+            obs_cluster = tf.reshape(SK_INPUT, [-1, 64, 64, 3])
             
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
                 # h_codes: n_batch x n_t x n_rkhs
-                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[Config.NUM_STEPS,Config.NUM_ENVS,-1]),(1,0,2))
+                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[num_steps,Config.NUM_ENVS,-1]),(1,0,2))
                 tblock = get_time_conv() #TemporalBlock(128, 2, 1, 1, 0.)
-                seq = tblock(self.h_codes)[:,0,:]
+                seq = tf.squeeze(tblock(self.h_codes),1)
                 z_t = get_linear_layer(n_in=128,n_out=128)(seq)
                 
                 self.u_t = get_online_predictor()(z_t)
                 
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
-                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[Config.NUM_STEPS,Config.NUM_ENVS,-1]),(1,0,2))
+                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[num_steps,Config.NUM_ENVS,-1]),(1,0,2))
                 tblock = get_time_conv() #TemporalBlock(128, 2, 1, 1, 0.)
-                target_seq = tblock(target_h_codes)[:,0,:]
+                target_seq = tf.squeeze(tblock(target_h_codes),1)
                 self.z_t_1 = get_linear_layer(n_in=128,n_out=128)(target_seq)
             self.z_t_1 = tf.linalg.normalize(self.z_t_1, ord='euclidean')[0]
             self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, ord='euclidean')[0]))
-            
-            
                         
         elif Config.AGENT == 'ppo_rnd':
             # with tf.variable_scope("model", reuse=True) as scope:
@@ -315,29 +319,36 @@ class CnnPolicy(object):
             rnd_diff_no_grad = tf.stop_gradient(self.rnd_diff)
 
         elif Config.AGENT == 'ppo_goal':
-            X_T = REP_PROC[:-1,]
-            X_T_1 = REP_PROC[1:,]
-            X_T = tf.reshape(X_T, [-1, 64, 64, 3])
-            X_T_1 = tf.reshape(X_T_1, [-1, 64, 64, 3])
+            """
+            Clustering part
+            """
+            obs_cluster = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+            
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit, act_invariant, _, _ = choose_cnn(X_T)
-                self.h_codes =  tf.concat([act_condit, act_invariant], axis=1)
-            # 512 prototypes of size 128 as per Proto-RL paper: 
-            # Note that we pass in the current cluster as a one-hot encoding vector
-            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                online_projector = get_linear_layer()
-                z_t = online_projector(self.h_codes)
+                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
+                # h_codes: n_batch x n_t x n_rkhs
+                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[TRAIN_NUM_STEPS+1,Config.NUM_ENVS,-1]),(1,0,2))
+                h_t = self.h_codes[:,:-1]
+                h_tp1 = self.h_codes[:,1:]
+                h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,512))
+                z_t = get_online_predictor(n_in=512,n_out=128)(h_seq)
                 
-            online_predictor = get_online_predictor()
-            self.u_t = online_predictor(z_t)
+                self.u_t = get_online_predictor()(z_t)
                 
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit, act_invariant, _, _ = choose_cnn(X_T_1)
-                target_encoder =  tf.concat([act_condit, act_invariant], axis=1)
-                target_projector = get_linear_layer()
-                self.z_t_1 = target_projector(target_encoder)
-            self.z_t_1 = tf.linalg.normalize(self.z_t_1, ord='euclidean')[0]
-            self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, ord='euclidean')[0]))
+                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
+                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[TRAIN_NUM_STEPS+1,Config.NUM_ENVS,-1]),(1,0,2))
+                target_h_t = target_h_codes[:,:-1]
+                target_h_tp1 = target_h_codes[:,1:]
+                target_h_seq = tf.reshape( tf.concat([target_h_t,target_h_tp1],2), (-1,512))
+                self.z_t_1 = get_online_predictor(n_in=512,n_out=128)(target_h_seq)
+            self.z_t_1 = tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
+        
+            self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0]))
+
+            # self.u_t = tf.reshape(self.u_t , (Config.NUM_ENVS,Config.NUM_STEPS,-1))
+            # self.codes = tf.reshape(self.codes, (Config.NUM_ENVS,Config.NUM_STEPS,-1))
+            # self.z_t_1 = tf.reshape(self.z_t_1, (Config.NUM_ENVS,Config.NUM_STEPS,-1))
                 
         if Config.AGENT == 'ppg':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -461,7 +472,7 @@ class CnnPolicy(object):
             return sess.run([self.rep_loss], {X: ob, REP_PROC: rep_vecs})[0]
         
         def compute_codes(ob):
-            return sess.run([self.codes, self.u_t, self.z_t_1], {REP_PROC: ob})
+            return sess.run([tf.reshape(self.codes , (Config.NUM_ENVS,Config.NUM_STEPS,-1)), tf.reshape(self.u_t , (Config.NUM_ENVS,Config.NUM_STEPS,-1)), tf.reshape(self.z_t_1 , (Config.NUM_ENVS,Config.NUM_STEPS,-1)) , self.h_codes[:,1:]], {REP_PROC: ob})
 
         self.X = X
         self.processed_x = processed_x

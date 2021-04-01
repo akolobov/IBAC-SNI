@@ -37,6 +37,16 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 
 from random import choice
 
+def soft_update(source_variables,target_variables,tau=1.0):
+    source_variables = sorted(source_variables, key=lambda x: x.name)
+    target_variables = sorted(target_variables, key=lambda x: x.name)
+    for v_t in target_variables:
+        for v_s in source_variables:
+            if v_t.name == v_s.name: 
+                v_t.shape.assert_is_compatible_with(v_s.shape)
+                v_t.assign((1 - tau) * v_t + tau * v_s)
+                break
+
 # helper function to turn numpy array into video file
 def vidwrite(filename, images, framerate=60, vcodec='libx264'):
     if not isinstance(images, np.ndarray):
@@ -638,6 +648,12 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
     
     for update in range(start_update+1, nupdates+1):
+        # update momentum encoder
+        params = tf.compat.v1.trainable_variables()
+        source_params = [p for p in params if "pi_branch" in p.name]
+        target_params = [p for p in params if "target" in p.name]
+        soft_update(source_params, target_params, tau=0.95)
+
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
         tstart = time.time()
@@ -672,7 +688,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         inds = np.arange(nbatch)
         E_pi = 1
         E_v = 9
-        E_aux = 1
+        E_aux = 0
         for _ in range(E_pi):
             np.random.shuffle(inds)
             for start in range(0, nbatch, nbatch_train):
