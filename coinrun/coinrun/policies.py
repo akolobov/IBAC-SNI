@@ -120,24 +120,24 @@ def get_anch_encoder():
     h = tf.keras.Model(inputs, p)
     return h
 
-def get_predictor(n_in=256,n_out=256):
+def get_predictor(n_in=256,n_out=256,prefix='predictor'):
     inputs = tf.keras.layers.Input((n_in, ))
-    p = tf.keras.layers.Dense(256,activation='relu')(inputs)
-    p2 = tf.keras.layers.Dense(n_out)(p)
+    p = tf.keras.layers.Dense(256,activation='relu',name=prefix+'_hidden1')(inputs)
+    p2 = tf.keras.layers.Dense(n_out,name=prefix+'_hidden2')(p)
     h = tf.keras.Model(inputs, p2)
     return h
 
-def get_linear_layer(n_in=256,n_out=128):
+def get_linear_layer(n_in=256,n_out=128,prefix='linear_predictor'):
     inputs = tf.keras.layers.Input((n_in, ))
-    p = tf.keras.layers.Dense(n_out)(inputs)
+    p = tf.keras.layers.Dense(n_out,name=prefix+'_linear')(inputs)
     h = tf.keras.Model(inputs, p)
     return h
 
-def get_online_predictor(n_in=128,n_out=128):
+def get_online_predictor(n_in=128,n_out=128,prefix='online_predictor'):
     inputs = tf.keras.layers.Input((n_in,))
-    p = tf.keras.layers.Dense(128, activation='relu')(inputs)
-    p2 = tf.keras.layers.Dense(512, activation='relu')(p)
-    p3 = tf.keras.layers.Dense(n_out)(p2)
+    p = tf.keras.layers.Dense(128, activation='relu',name=prefix+'_hidden1')(inputs)
+    p2 = tf.keras.layers.Dense(512, activation='relu',name=prefix+'_hidden2')(p)
+    p3 = tf.keras.layers.Dense(n_out,name=prefix+'_hidden3')(p2)
     h = tf.keras.Model(inputs, p3)
     return h
 
@@ -207,12 +207,19 @@ class CnnPolicy(object):
             # labels of Q value quantile bins
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
             self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
+            self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None])
         if Config.AGENT == 'ppo_goal':
-             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
                 self.train_dropout_assign_ops = fast_dropout_assigned_ops
                 self.run_dropout_assign_ops = slow_dropout_assign_ops
                 self.h =  tf.concat([act_condit, act_invariant], axis=1)
+            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+                act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
+                self.train_dropout_assign_ops = fast_dropout_assigned_ops
+                self.run_dropout_assign_ops = slow_dropout_assign_ops
+                self.h =  tf.concat([act_condit, act_invariant], axis=1)
+            
         else:
             with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
@@ -331,9 +338,9 @@ class CnnPolicy(object):
                 h_t = self.h_codes[:,:-1]
                 h_tp1 = self.h_codes[:,1:]
                 h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,512))
-                z_t = get_online_predictor(n_in=512,n_out=128)(h_seq)
+                z_t = get_online_predictor(n_in=512,n_out=128,prefix='SH_z_pred')(h_seq)
                 
-                self.u_t = get_online_predictor()(z_t)
+                self.u_t = get_online_predictor(prefix='SH_u_pred')(z_t)
                 
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
@@ -341,14 +348,60 @@ class CnnPolicy(object):
                 target_h_t = target_h_codes[:,:-1]
                 target_h_tp1 = target_h_codes[:,1:]
                 target_h_seq = tf.reshape( tf.concat([target_h_t,target_h_tp1],2), (-1,512))
-                self.z_t_1 = get_online_predictor(n_in=512,n_out=128)(target_h_seq)
+                self.z_t_1 = get_online_predictor(n_in=512,n_out=128,prefix='SH_z_pred')(target_h_seq)
             self.z_t_1 = tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
-        
-            self.codes = sinkhorn(scores=tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0]))
 
-            # self.u_t = tf.reshape(self.u_t , (Config.NUM_ENVS,Config.NUM_STEPS,-1))
-            # self.codes = tf.reshape(self.codes, (Config.NUM_ENVS,Config.NUM_STEPS,-1))
-            # self.z_t_1 = tf.reshape(self.z_t_1, (Config.NUM_ENVS,Config.NUM_STEPS,-1))
+            # scores: n_batch x n_clusters
+            scores = tf.linalg.matmul(tf.stop_gradient(self.z_t_1), tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0])
+            self.codes = sinkhorn(scores=scores)
+            """
+            Compute average cluster reward 1/N_i \sum_{C_i} V^pi(s_j)
+            """
+            cluster_idx = tf.argmax(scores,1)
+            if False:
+                reward_scale = []
+                for i in range(Config.N_SKILLS):
+                    filter_ = tf.cast(tf.fill(tf.shape(self.R_cluster), i),tf.float32)
+                    mask = tf.cast(tf.math.equal(filter_ , self.R_cluster),tf.float32)
+                    rets_cluster = tf.reduce_mean(mask * self.R_cluster)
+                    reward_scale.append( rets_cluster )
+                reward_scale = tf.stack(reward_scale)
+                # Predict the average cluster value from the prototype (centroid)
+                self.cluster_value_mse_loss = tf.reduce_mean( (get_online_predictor(n_in=128,n_out=1)(tf.transpose(self.protos)) - reward_scale)**2 )
+            else:
+                self.cluster_value_mse_loss = 0.
+            """
+            MYOW where k-NN neighbors are replaced by Sinkhorn clusters
+            """
+            y_online = h_seq
+            y_target = tf.stop_gradient(target_h_seq)
+            
+
+            # get K closest vectors by Sinkhorn scores
+            dist = _compute_distance(scores,scores)
+            k_t = 3
+            vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
+            
+            # N_target = y_target
+            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+                v_online_net = get_predictor(n_in=512,n_out=256,prefix='MYOW_v_pred')
+                r_online_net = get_linear_layer(n_out=256,prefix='MYOW_r_pred')
+                v_online = v_online_net(y_online)
+                r_online = r_online_net(v_online)
+            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+                v_target_net = get_predictor(n_in=512,n_out=256,prefix='MYOW_v_pred')
+                r_target_net = get_linear_layer(n_out=256,prefix='MYOW_r_pred')
+
+            self.myow_loss = 0.
+            for k in range(k_t):
+                indx2 = indx[:,k+1]
+                N_target = tf.gather(y_target, indx2)
+                v_target = v_target_net(N_target)
+                r_target = r_target_net(v_target)
+
+                self.myow_loss += tf.reduce_mean(cos_loss(r_online, v_target)) / k_t
+
+        
                 
         if Config.AGENT == 'ppg':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):

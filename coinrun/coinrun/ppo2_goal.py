@@ -69,14 +69,17 @@ def sinkhorn(scores, temp=0.1, k=3):
 Intrinsic advantage methods
 """
 def soft_update(source_variables,target_variables,tau=1.0):
+	print('EMA update')
 	source_variables = sorted(source_variables, key=lambda x: x.name)
 	target_variables = sorted(target_variables, key=lambda x: x.name)
 	for v_t in target_variables:
+		v_t_suffix = '/'.join(v_t.name.split('/')[1:])
 		for v_s in source_variables:
-			if v_t.name == v_s.name: 
+			v_s_suffix = '/'.join(v_s.name.split('/')[1:])
+			if v_t_suffix == v_s_suffix: 
 				v_t.shape.assert_is_compatible_with(v_s.shape)
 				v_t.assign((1 - tau) * v_t + tau * v_s)
-				print('found param %s'%v_t.name)
+				# print('loaded param %s'%v_t.name)
 				break
 
 class RunningStats(object):
@@ -356,8 +359,12 @@ class Model(object):
 		p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / 0.1, axis=1)
 		cluster_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum( train_model.codes * p_t, axis=1))
 
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + cluster_loss*Config.REP_LOSS_WEIGHT# + vf_loss_i*vf_coef
-		aux_loss = (cluster_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef)
+		vpred_loss = train_model.cluster_value_mse_loss
+
+		myow_loss = train_model.myow_loss
+
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + cluster_loss*Config.REP_LOSS_WEIGHT + vpred_loss #+ myow_loss # + vf_loss_i*vf_coef
+		aux_loss = cluster_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef + vpred_loss + myow_loss
 		# import ipdb;ipdb.set_trace()
 
 		if Config.SYNC_FROM_ROOT:
@@ -388,7 +395,7 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, original_obs, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs,  states=None, train_target='policy'):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, original_obs, r_cluster, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs,  states=None, train_target='policy'):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -402,23 +409,24 @@ class Model(object):
 			original_obs = original_obs.reshape(-1,Config.NUM_ENVS,64,64,3)
 
 			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
-						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, train_model.REP_PROC:np.concatenate([np.expand_dims(original_obs[0],0),original_obs],0)}
+						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, train_model.REP_PROC:np.concatenate([np.expand_dims(original_obs[0],0),original_obs],0), train_model.R_cluster:r_cluster
+						}
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
 			
 			if train_target=='policy':
 				return sess.run(
-						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, train_model.codes, _train],
+						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, myow_loss, train_model.codes, _train],
 						td_map
 					)[:-1]
 			elif train_target=='clustering':
 				return sess.run(
-						[cluster_loss, train_model.codes, _train_aux],
+						[cluster_loss, myow_loss, train_model.codes, _train_aux],
 						td_map
 					)[:-1]
 			
-		self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'value_i_loss', "cluster_loss", 'gradient_norm']
+		self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'value_i_loss', "cluster_loss","myow_loss", 'gradient_norm']
 
 		def save(save_path):
 			ps = sess.run(params)
@@ -558,9 +566,7 @@ class Runner(AbstractEnvRunner):
 			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0))
 			sess = tf.compat.v1.get_default_session()
 			clusters = sess.run(self.model.train_model.protos).transpose(1,0)
-
 			nearest_Q_clusters = clusters[mb_codes.argmax(2).reshape(-1)]
-
 			mb_rewards_i = ((mb_z_t_1.reshape(-1,128)-nearest_Q_clusters)**2).mean(1).reshape(Config.NUM_STEPS,Config.NUM_ENVS)
 		else:
 			mb_rewards_i = np.zeros_like(mb_rewards)
@@ -766,8 +772,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs.reshape(Config.NUM_STEPS,Config.NUM_ENVS,64,64,3)[inds_2d[:,0]][:16].reshape(-1,64,64,3)
-				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster, *slices, train_target='policy')
-				value_i_loss, cluster_loss_res, mb_Q = res[-3:]
+				r_cluster = returns.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
+				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster, *slices, train_target='policy')
+				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
@@ -778,7 +785,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs.reshape(Config.NUM_STEPS,Config.NUM_ENVS,64,64,3)[inds_2d[:,0]][:16].reshape(-1,64,64,3)
-				cluster_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster, *slices, train_target='clustering')
+				r_cluster = returns.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
+				cluster_loss_res, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster, *slices, train_target='clustering')
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])
@@ -835,18 +843,19 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                         "%s/cluster_loss"%(Config.ENVIRONMENT):cluster_loss_res,
 						"%s/silhouette_score"%(Config.ENVIRONMENT):sil_score,
 						'%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
+						'%s/myow_loss'%(Config.ENVIRONMENT):myow_loss_res,
                         "%s/custom_step"%(Config.ENVIRONMENT):step})
 			
-			if step % (60*256*32) == 0: # every 1M or so
-				from collections import Counter
-				cluster_labels = mb_Q.argmax(1)
-				mb_cluster_ids = Counter(cluster_labels).most_common(10)
-				img_block = []
-				for cl,n_samples in mb_cluster_ids:
-					state_samples = obs_subsampled_cluster[cluster_labels==cl][np.random.choice(np.arange(n_samples),min(8,n_samples))]
-					img_block.append(state_samples)
-				final_mosaic = np.block([[[x] for x in row] for row in img_block])
-				wandb.log({"%s/cluster_samples_%d"%(Config.ENVIRONMENT,step): [wandb.Image(final_mosaic, caption="8 samples / cluster for 10 largest clusters (%d)"%(step))]})
+			# if step % (60*256*32) == 0: # every 1M or so
+			# 	from collections import Counter
+			# 	cluster_labels = mb_Q.argmax(1)
+			# 	mb_cluster_ids = Counter(cluster_labels).most_common(10)
+			# 	img_block = []
+			# 	for cl,n_samples in mb_cluster_ids:
+			# 		state_samples = obs_subsampled_cluster[cluster_labels==cl][np.random.choice(np.arange(n_samples),min(8,n_samples))]
+			# 		img_block.append(state_samples)
+			# 	final_mosaic = np.block([[[x] for x in row] for row in img_block])
+			# 	wandb.log({"%s/cluster_samples_%d"%(Config.ENVIRONMENT,step): [wandb.Image(final_mosaic, caption="8 samples / cluster for 10 largest clusters (%d)"%(step))]})
 
 
 		if can_save:
