@@ -53,8 +53,8 @@ def sinkhorn(scores, temp=0.1, k=3):
 	Q = tf.transpose(tf.math.exp(Q))
 	Q /= tf.math.reduce_sum(Q)
 
-	r = tf.ones(Q.get_shape()[0]) / tf.cast(Q.get_shape()[0], tf.float32)
-	c = tf.ones(Q.get_shape()[1]) / tf.cast(Q.get_shape()[1], tf.float32)
+	r = tf.ones(tf.shape(Q)[0]) / tf.cast(tf.shape(Q)[0], tf.float32)
+	c = tf.ones(tf.shape(Q)[1]) / tf.cast(tf.shape(Q)[1], tf.float32)
 
 	for it in range(k):
 		u = tf.reduce_sum(Q, axis=1)
@@ -767,7 +767,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs.reshape(Config.NUM_STEPS,Config.NUM_ENVS,64,64,3)[inds_2d[:,0]][:16].reshape(-1,64,64,3)
 				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster, *slices, train_target='policy')
-				cluster_loss_res, mb_Q = res[-2:]
+				value_i_loss, cluster_loss_res, mb_Q = res[-3:]
 				mblossvals.append(res[:-1])
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
@@ -834,7 +834,19 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                         "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
                         "%s/cluster_loss"%(Config.ENVIRONMENT):cluster_loss_res,
 						"%s/silhouette_score"%(Config.ENVIRONMENT):sil_score,
+						'%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
                         "%s/custom_step"%(Config.ENVIRONMENT):step})
+			
+			if step % (60*256*32) == 0: # every 1M or so
+				from collections import Counter
+				cluster_labels = mb_Q.argmax(1)
+				mb_cluster_ids = Counter(cluster_labels).most_common(10)
+				img_block = []
+				for cl,n_samples in mb_cluster_ids:
+					state_samples = obs_subsampled_cluster[cluster_labels==cl][np.random.choice(np.arange(n_samples),min(8,n_samples))]
+					img_block.append(state_samples)
+				final_mosaic = np.block([[[x] for x in row] for row in img_block])
+				wandb.log({"%s/cluster_samples_%d"%(Config.ENVIRONMENT,step): [wandb.Image(final_mosaic, caption="8 samples / cluster for 10 largest clusters (%d)"%(step))]})
 
 
 		if can_save:

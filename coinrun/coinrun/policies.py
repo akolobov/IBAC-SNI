@@ -195,7 +195,7 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, None)
             TRAIN_NUM_STEPS = Config.NUM_STEPS//16
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(TRAIN_NUM_STEPS+1, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
             self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(128, Config.N_SKILLS)), trainable=True, name='Prototypes')
@@ -327,7 +327,7 @@ class CnnPolicy(object):
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
                 # h_codes: n_batch x n_t x n_rkhs
-                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[TRAIN_NUM_STEPS+1,Config.NUM_ENVS,-1]),(1,0,2))
+                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
                 h_t = self.h_codes[:,:-1]
                 h_tp1 = self.h_codes[:,1:]
                 h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,512))
@@ -337,7 +337,7 @@ class CnnPolicy(object):
                 
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
-                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[TRAIN_NUM_STEPS+1,Config.NUM_ENVS,-1]),(1,0,2))
+                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
                 target_h_t = target_h_codes[:,:-1]
                 target_h_tp1 = target_h_codes[:,1:]
                 target_h_seq = tf.reshape( tf.concat([target_h_t,target_h_tp1],2), (-1,512))
