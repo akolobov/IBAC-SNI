@@ -38,14 +38,18 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 from random import choice
 
 def soft_update(source_variables,target_variables,tau=1.0):
-    source_variables = sorted(source_variables, key=lambda x: x.name)
-    target_variables = sorted(target_variables, key=lambda x: x.name)
-    for v_t in target_variables:
-        for v_s in source_variables:
-            if v_t.name == v_s.name: 
-                v_t.shape.assert_is_compatible_with(v_s.shape)
-                v_t.assign((1 - tau) * v_t + tau * v_s)
-                break
+	print('EMA update')
+	source_variables = sorted(source_variables, key=lambda x: x.name)
+	target_variables = sorted(target_variables, key=lambda x: x.name)
+	for v_t in target_variables:
+		v_t_suffix = '/'.join(v_t.name.split('/')[1:])
+		for v_s in source_variables:
+			v_s_suffix = '/'.join(v_s.name.split('/')[1:])
+			if v_t_suffix == v_s_suffix: 
+				v_t.shape.assert_is_compatible_with(v_s.shape)
+				v_t.assign((1 - tau) * v_t + tau * v_s)
+				# print('loaded param %s'%v_t.name)
+				break
 
 # helper function to turn numpy array into video file
 def vidwrite(filename, images, framerate=60, vcodec='libx264'):

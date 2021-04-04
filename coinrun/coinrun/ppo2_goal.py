@@ -363,8 +363,8 @@ class Model(object):
 
 		myow_loss = train_model.myow_loss
 
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + cluster_loss*Config.REP_LOSS_WEIGHT + vpred_loss #+ myow_loss # + vf_loss_i*vf_coef
-		aux_loss = cluster_loss*Config.REP_LOSS_WEIGHT + vf_loss_i*vf_coef + vpred_loss + myow_loss
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + cluster_loss*Config.REP_LOSS_WEIGHT  #+ myow_loss #+ vpred_loss # + vf_loss_i*vf_coef
+		aux_loss =  myow_loss # vf_loss_i*vf_coef + vpred_loss cluster_loss*Config.REP_LOSS_WEIGHT +
 		# import ipdb;ipdb.set_trace()
 
 		if Config.SYNC_FROM_ROOT:
@@ -395,7 +395,7 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, original_obs, r_cluster, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs,  states=None, train_target='policy'):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, original_obs, r_cluster,act_cluster, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs,  states=None, train_target='policy'):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -409,7 +409,7 @@ class Model(object):
 			original_obs = original_obs.reshape(-1,Config.NUM_ENVS,64,64,3)
 
 			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
-						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, train_model.REP_PROC:np.concatenate([np.expand_dims(original_obs[0],0),original_obs],0), train_model.R_cluster:r_cluster
+						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, train_model.REP_PROC:np.concatenate([np.expand_dims(original_obs[0],0),original_obs],0), train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
 						}
 			if states is not None:
 				td_map[train_model.S] = states
@@ -710,7 +710,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		params = tf.compat.v1.trainable_variables()
 		source_params = [p for p in params if "online" in p.name]
 		target_params = [p for p in params if "target" in p.name]
-		soft_update(source_params, target_params, tau=0.95)
+		# soft_update(source_params, target_params, tau=0.97)
 
 
 		assert nbatch % nminibatches == 0
@@ -771,9 +771,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
+				import ipdb;ipdb.set_trace()
 				obs_subsampled_cluster = obs.reshape(Config.NUM_STEPS,Config.NUM_ENVS,64,64,3)[inds_2d[:,0]][:16].reshape(-1,64,64,3)
+				act_subsampled_cluster = actions.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
 				r_cluster = returns.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
-				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster, *slices, train_target='policy')
+				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster,act_subsampled_cluster, *slices, train_target='policy')
 				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
 		for _ in range(E_clustering):
@@ -785,8 +787,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs.reshape(Config.NUM_STEPS,Config.NUM_ENVS,64,64,3)[inds_2d[:,0]][:16].reshape(-1,64,64,3)
+				act_subsampled_cluster = actions.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
 				r_cluster = returns.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
-				cluster_loss_res, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster, *slices, train_target='clustering')
+				cluster_loss_res, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='clustering')
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])

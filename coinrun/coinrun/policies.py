@@ -208,6 +208,7 @@ class CnnPolicy(object):
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
             self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
             self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None])
+            self.A_cluster = self.pdtype.sample_placeholder([None])
         if Config.AGENT == 'ppo_goal':
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
@@ -330,25 +331,29 @@ class CnnPolicy(object):
             Clustering part
             """
             obs_cluster = tf.reshape(REP_PROC, [-1, 64, 64, 3])
-            
+
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
                 # h_codes: n_batch x n_t x n_rkhs
+                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
                 self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
                 h_t = self.h_codes[:,:-1]
                 h_tp1 = self.h_codes[:,1:]
-                h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,512))
-                z_t = get_online_predictor(n_in=512,n_out=128,prefix='SH_z_pred')(h_seq)
+                h_a_t = get_predictor(n_in=ac_space.n,n_out=256)(tf.transpose(tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,Config.NUM_ENVS,ac_space.n)),(1,0,2)))
+                h_seq = tf.reshape( tf.concat([h_t,h_a_t,h_tp1],2), (-1,256*3))
+                self.z_t = get_online_predictor(n_in=256*3,n_out=128,prefix='SH_z_pred')(h_seq)
                 
-                self.u_t = get_online_predictor(prefix='SH_u_pred')(z_t)
+                self.u_t = get_predictor(n_in=128,n_out=128,prefix='SH_u_pred')(self.z_t)
                 
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
-                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
+                act_condit_target, act_invariant_target, _, _ = choose_cnn(obs_cluster)
+                # act_condit_target = tf.stop_gradient(act_condit_target)
+                # act_invariant_target = tf.stop_gradient(act_invariant_target)
+                target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
                 target_h_t = target_h_codes[:,:-1]
                 target_h_tp1 = target_h_codes[:,1:]
-                target_h_seq = tf.reshape( tf.concat([target_h_t,target_h_tp1],2), (-1,512))
-                self.z_t_1 = get_online_predictor(n_in=512,n_out=128,prefix='SH_z_pred')(target_h_seq)
+                target_h_a_t = get_predictor(n_in=ac_space.n,n_out=256)(tf.transpose(tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,Config.NUM_ENVS,ac_space.n)),(1,0,2)))
+                target_h_seq = tf.reshape( tf.concat([target_h_t,target_h_a_t,target_h_tp1],2), (-1,256*3))
+                self.z_t_1 = get_online_predictor(n_in=256*3,n_out=128,prefix='SH_z_pred')(target_h_seq)
             self.z_t_1 = tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
 
             # scores: n_batch x n_clusters
@@ -378,19 +383,19 @@ class CnnPolicy(object):
             
 
             # get K closest vectors by Sinkhorn scores
-            dist = _compute_distance(scores,scores)
-            k_t = 3
+            dist = _compute_distance(y_online,y_online)
+            k_t = 1
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
             
             # N_target = y_target
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                v_online_net = get_predictor(n_in=512,n_out=256,prefix='MYOW_v_pred')
-                r_online_net = get_linear_layer(n_out=256,prefix='MYOW_r_pred')
+                v_online_net = get_predictor(n_in=256*3,n_out=256,prefix='MYOW_v_pred')
+                r_online_net = get_predictor(n_out=256,prefix='MYOW_r_pred')
                 v_online = v_online_net(y_online)
                 r_online = r_online_net(v_online)
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                v_target_net = get_predictor(n_in=512,n_out=256,prefix='MYOW_v_pred')
-                r_target_net = get_linear_layer(n_out=256,prefix='MYOW_r_pred')
+                v_target_net = get_predictor(n_in=256*3,n_out=256,prefix='MYOW_v_pred_target')
+                r_target_net = get_predictor(n_out=256,prefix='MYOW_r_pred_target')
 
             self.myow_loss = 0.
             for k in range(k_t):
@@ -399,7 +404,7 @@ class CnnPolicy(object):
                 v_target = v_target_net(N_target)
                 r_target = r_target_net(v_target)
 
-                self.myow_loss += tf.reduce_mean(cos_loss(r_online, v_target)) / k_t
+                self.myow_loss += ( tf.reduce_mean(cos_loss(r_online, v_target)) + tf.reduce_mean(cos_loss(r_target, v_online)) ) / k_t
 
         
                 
