@@ -207,8 +207,8 @@ class CnnPolicy(object):
             # labels of Q value quantile bins
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
             self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
-            self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None])
-            self.A_cluster = self.pdtype.sample_placeholder([None])
+            self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None, Config.NUM_ENVS])
+            self.A_cluster = self.pdtype.sample_placeholder([None, Config.NUM_ENVS])
         if Config.AGENT == 'ppo_goal':
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)

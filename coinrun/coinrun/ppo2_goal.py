@@ -363,9 +363,8 @@ class Model(object):
 
 		myow_loss = train_model.myow_loss
 
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + cluster_loss*Config.REP_LOSS_WEIGHT  #+ myow_loss #+ vpred_loss # + vf_loss_i*vf_coef
-		aux_loss =  myow_loss # vf_loss_i*vf_coef + vpred_loss cluster_loss*Config.REP_LOSS_WEIGHT +
-		# import ipdb;ipdb.set_trace()
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss# + cluster_loss  #+ myow_loss #+ vpred_loss # + vf_loss_i*vf_coef
+		aux_loss =  myow_loss + cluster_loss # vf_loss_i*vf_coef + vpred_loss cluster_loss*Config.REP_LOSS_WEIGHT +
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -405,8 +404,6 @@ class Model(object):
 			adv_mean_i = np.mean(advs_i, axis=0, keepdims=True)
 			adv_std_i = np.std(advs_i, axis=0, keepdims=True)
 			advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
-
-			original_obs = original_obs.reshape(-1,Config.NUM_ENVS,64,64,3)
 
 			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
 						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, train_model.REP_PROC:np.concatenate([np.expand_dims(original_obs[0],0),original_obs],0), train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
@@ -597,7 +594,7 @@ class Runner(AbstractEnvRunner):
 			mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
 			
 		mb_returns = mb_advs + mb_values
-		return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1, mb_codes)),
+		return (mb_obs, mb_returns, mb_dones, mb_actions, *map(sf01, (mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1, mb_codes)),
 			states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, mb_rewards_i, last_values_i)
 
 	def compute_intrinsic_returns(self, mb_rewards_i, mb_values_i, last_values_i, mb_dones):
@@ -753,28 +750,31 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
 		mean_cust_loss = 0
 		inds = np.arange(nbatch)
-		E_ppo = noptepochs
+		E_ppo = 1 #noptepochs
 		E_clustering = Config.GOAL_EPOCHS
 		mbinds = inds[0:nbatch_train]
-		dummy_slice = (arr[mbinds] for arr in (obs, returns, returns, masks, actions, values, values_i, skill, neglogpacs))
-
+		
+		# dummy_slice = (arr[mbinds] for arr in (returns, returns, masks, actions, values, values_i, skill, neglogpacs))
 		# for _ in range(E_clustering):
 		# 	cluster_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *dummy_slice, train_target='clustering')[0]
 		# scale_i = np.log(1/cluster_loss_res + 1)
-		returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS))
+		if INTRINSIC:
+			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS))
+		else:
+			returns_i = np.zeros_like(returns)
 
-		for _ in range(noptepochs):
+		for _ in range(E_ppo):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
 			for start in range(0, nbatch, nbatch_train):
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
-				import ipdb;ipdb.set_trace()
-				obs_subsampled_cluster = obs.reshape(Config.NUM_STEPS,Config.NUM_ENVS,64,64,3)[inds_2d[:,0]][:16].reshape(-1,64,64,3)
-				act_subsampled_cluster = actions.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
-				r_cluster = returns.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
+				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
+				obs_subsampled_cluster = obs[inds_2d[:,0]][:16+1]#.reshape(-1,64,64,3)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:16+1]#.reshape(-1)
+				r_cluster = returns[inds_2d[:,0]][:16+1]#.reshape(-1)
 				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster,act_subsampled_cluster, *slices, train_target='policy')
 				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
@@ -785,10 +785,10 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (obs, returns, returns_i, masks, actions, values, values_i, skill, neglogpacs))
-				obs_subsampled_cluster = obs.reshape(Config.NUM_STEPS,Config.NUM_ENVS,64,64,3)[inds_2d[:,0]][:16].reshape(-1,64,64,3)
-				act_subsampled_cluster = actions.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
-				r_cluster = returns.reshape(Config.NUM_STEPS,Config.NUM_ENVS)[inds_2d[:,0]][:16].reshape(-1)
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
+				obs_subsampled_cluster = obs[inds_2d[:,0]][:16+1]#.reshape(-1,64,64,3)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:16+1]#.reshape(-1)
+				r_cluster = returns[inds_2d[:,0]][:16+1]#.reshape(-1)
 				cluster_loss_res, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='clustering')
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
