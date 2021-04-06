@@ -384,7 +384,7 @@ class CnnPolicy(object):
 
             # get K closest vectors by Sinkhorn scores
             dist = _compute_distance(y_online,y_online)
-            k_t = 1
+            k_t = 3
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
             
             # N_target = y_target
@@ -405,6 +405,10 @@ class CnnPolicy(object):
                 r_target = r_target_net(v_target)
 
                 self.myow_loss += ( tf.reduce_mean(cos_loss(r_online, v_target)) + tf.reduce_mean(cos_loss(r_target, v_online)) ) / k_t
+
+            # with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            #     phi_s = get_online_predictor(n_in=256,n_out=128,prefix='SH_z_pred')(tf.reshape(h_tp1,(-1,256)))
+            #     self.myow_loss += tf.reduce_mean(cos_loss(phi_s, tf.transpose(tf.gather(self.protos,cluster_idx,axis=1),(1,0)) ))
 
         
                 
