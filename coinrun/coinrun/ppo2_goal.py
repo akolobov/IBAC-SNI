@@ -357,6 +357,8 @@ class Model(object):
 		# curr_codes = sinkhorn(scores=tf.linalg.matmul(Z_T_1, tf.linalg.normalize(train_model.protos, ord='euclidean')[0]))
 		# rep_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(curr_codes) * p_t, axis=1))
 		p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / 0.1, axis=1)
+		curr_codes = sinkhorn(scores=tf.linalg.matmul(train_model.z_t_1, tf.linalg.normalize(train_model.protos, ord='euclidean')[0]))
+		proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(curr_codes) * p_t, axis=1))
 		cluster_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum( train_model.codes * p_t, axis=1))
 
 		vpred_loss = train_model.cluster_value_mse_loss
@@ -421,7 +423,7 @@ class Model(object):
 					)[:-1]
 			elif train_target=='clustering':
 				return sess.run(
-						[cluster_loss, myow_loss, train_model.codes, _train_aux],
+						[cluster_loss, myow_loss, train_model.codes, proto_loss, _train_aux],
 						td_map
 					)[:-1]
 			
@@ -791,16 +793,35 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		E_clustering = Config.GOAL_EPOCHS
 		mbinds = inds[0:nbatch_train]
 		
-		# dummy_slice = (arr[mbinds] for arr in (returns, returns, masks, actions, values, values_i, skill, neglogpacs))
-		# for _ in range(E_clustering):
-		# 	cluster_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *dummy_slice, train_target='clustering')[0]
-		# scale_i = np.log(1/cluster_loss_res + 1)
-		if Config.INTRINSIC:
+		N_BATCH_AUX = 32
+		total_proto_ce_loss = 0
+		# create dummy array for intrinsic reward during clustering updates
+		returns_i = np.zeros_like(returns)
+		for _ in range(E_clustering):
+			np.random.shuffle(inds)
+			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
+			for start in range(0, nbatch, nbatch_train):
+				sess.run([model.train_model.train_dropout_assign_ops])
+				end = start + nbatch_train
+				mbinds = inds[start:end]
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
+				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
+				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
+				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='clustering')
+				total_proto_ce_loss += proto_ce_loss
+
+		# compute proper intrinsic reward before PPO updates
+		if Config.INTRINSIC and Config.HARD_CODES:
+			# compute log CE reward scaling
+			scale_ce_i = np.log(1/total_proto_ce_loss + 1)
+			returns_i = runner.compute_intrinsic_returns(rewards_i*scale_ce_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
+		elif Config.INTRINSIC:
 			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
 		else:
 			returns_i = np.zeros_like(returns)
-
-		N_BATCH_AUX = 32
+		
+		
 		for _ in range(E_ppo):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -816,18 +837,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster,act_subsampled_cluster, *slices, train_target='policy')
 				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
-		for _ in range(E_clustering):
-			np.random.shuffle(inds)
-			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
-			for start in range(0, nbatch, nbatch_train):
-				sess.run([model.train_model.train_dropout_assign_ops])
-				end = start + nbatch_train
-				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
-				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
-				cluster_loss_res, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='clustering')
+		
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])
