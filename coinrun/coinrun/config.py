@@ -52,8 +52,14 @@ class ConfigSingle(object):
         # For exponential moving average updates on target encoder
         bool_keys.append(('ema', 'ema'))
 
-        ### Others:
+        # For computing intrinsic reward
+        bool_keys.append(('itr', 'intrinsic'))
 
+        # for Mine Your Own View SSL prediction
+        bool_keys.append(('myow','myow'))
+        ### Others:
+        # Use hard cluster/code assignments for intrinsic reward
+        bool_keys.append(('hgoal', 'hard_codes'))
         # Long training for 200M time steps
         bool_keys.append(('long', 'long_training'))
 

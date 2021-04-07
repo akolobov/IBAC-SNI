@@ -13,9 +13,18 @@ python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --
 DIAYN:
 python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --agent ppo_diayn -skilleps 4 -n_skills 5
 
-Goal conditioned PPO:
-python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 20
-
+Goal conditioned PPO :
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_hgoal -gpu 1 -n_skills 50
+(with hard codes)
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_hgoal -gpu 1 -n_skills 50 --hgoal
+(with ema)
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_hgoal -gpu 1 -n_skills 50 --ema
+(with intrinsic reward)
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_hgoal -gpu 1 -n_skills 50 --itr
+(with mine your own view)
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_hgoal -gpu 1 -n_skills 50 --myow
+(all the above)
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_hgoal -gpu 1 -n_skills 50 --itr --hgoal --ema --myow
 RND:
 python3 -m coinrun.train_agent --env coinrun --run-id rnd --num-levels 0 --short --agent ppo_rnd
 

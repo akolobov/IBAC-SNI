@@ -360,10 +360,12 @@ class Model(object):
 		cluster_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum( train_model.codes * p_t, axis=1))
 
 		vpred_loss = train_model.cluster_value_mse_loss
+		if Config.MYOW:
+			myow_loss = train_model.myow_loss
+		else:
+			myow_loss = tf.reduce_mean(tf.zeros(1))
 
-		myow_loss = train_model.myow_loss
-
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss# + cluster_loss  #+ myow_loss #+ vpred_loss # + vf_loss_i*vf_coef
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + vf_loss_i*vf_coef# + cluster_loss  #+ myow_loss #+ vpred_loss # + vf_loss_i*vf_coef
 		aux_loss =  myow_loss + cluster_loss # vf_loss_i*vf_coef + vpred_loss cluster_loss*Config.REP_LOSS_WEIGHT +
 
 		if Config.SYNC_FROM_ROOT:
@@ -448,6 +450,7 @@ class Model(object):
 		self.custom_train = train_model.custom_train
 		self.value_i = act_model.value_i
 		self.compute_codes = act_model.compute_codes
+		self.compute_hard_codes = act_model.compute_hard_codes
 
 		if Config.SYNC_FROM_ROOT:
 			if MPI.COMM_WORLD.Get_rank() == 0:
@@ -557,10 +560,40 @@ class Runner(AbstractEnvRunner):
 		mb_dones = np.asarray(mb_dones, dtype=np.bool)	
 		last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
 		last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
-
+		# compute codes
 		
-		if intrinsic:
-			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0))
+		if intrinsic and Config.HARD_CODES:
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
+			# # compute codes
+			# codes, u_t, z_t_1 = self.model.compute_hard_codes(mb_obs)
+
+			# add in gaussian noise for missed sample.
+			# rand_arr_1 = np.random.normal(size=(32, 128))
+			# rand_arr_2 = np.random.normal(size=(32, Config.N_SKILLS))
+			# u_t = np.concatenate([u_t, rand_arr_1])
+			# z_t_1 = np.concatenate([rand_arr_1, z_t_1])
+			# codes = np.concatenate([rand_arr_2, codes])
+			# mb_codes.append(codes)
+			# mb_u_t.append(u_t)
+			# mb_z_t_1.append(z_t_1)
+				
+			# codes = np.asarray(mb_codes)
+			# mb_u_t = np.asarray(mb_u_t, dtype=np.float32)
+			# mb_z_t_1 = np.asarray(mb_z_t_1, dtype=np.float32)
+			# codes = codes.reshape((-1, Config.N_SKILLS))
+			# mb_u_t = mb_u_t.reshape((-1, 128))
+			# mb_z_t_1 = mb_z_t_1.reshape((-1, 128))
+			# for each observation, find the most likely code/cluster
+			hard_codes = np.argmax(mb_codes.reshape(-1,Config.N_SKILLS), axis=1)
+			
+			# mask to find states relevant to the current code
+			masked_codes = np.ma.masked_equal(hard_codes, z).mask
+			# rewards are 1 for states with the current code, zero else
+			code_rewards = masked_codes*1
+			mb_rewards_i = np.reshape(code_rewards, (256, 32))
+
+		elif intrinsic:
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
 			sess = tf.compat.v1.get_default_session()
 			clusters = sess.run(self.model.train_model.protos).transpose(1,0)
 			nearest_Q_clusters = clusters[mb_codes.argmax(2).reshape(-1)]
@@ -701,7 +734,10 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	name = "%s__%s__%f__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT,np.random.randint(100000000))
 	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	PRETRAIN = False
-	INTRINSIC = False
+	if Config.HARD_CODES:
+		print('USING HARD CLUSTERS')
+	if Config.INTRINSIC:
+		print('USING INTRINSIC REWARD')
 	for update in range(start_update+1, nupdates+1):
 		if Config.EMA:
 			# update momentum encoder
@@ -721,7 +757,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		mpi_print('collecting rollouts...')
 		run_tstart = time.time()
 		if z_iter < Config.SKILL_EPOCHS:
-			packed = runner.run(update_frac=update/nupdates, z=curr_z, pretrain=PRETRAIN, intrinsic=INTRINSIC)
+			packed = runner.run(update_frac=update/nupdates, z=curr_z, pretrain=PRETRAIN, intrinsic=Config.INTRINSIC)
 			z_iter += 1
 		else:
 			# sample new skill/code for current episodes
@@ -759,11 +795,12 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		# for _ in range(E_clustering):
 		# 	cluster_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, *dummy_slice, train_target='clustering')[0]
 		# scale_i = np.log(1/cluster_loss_res + 1)
-		if INTRINSIC:
-			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS))
+		if Config.INTRINSIC:
+			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
 		else:
 			returns_i = np.zeros_like(returns)
 
+		N_BATCH_AUX = 32
 		for _ in range(E_ppo):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -773,9 +810,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				mbinds = inds[start:end]
 				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
-				obs_subsampled_cluster = obs[inds_2d[:,0]][:16+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:16+1]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:16+1]#.reshape(-1)
+				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
+				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
 				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster,act_subsampled_cluster, *slices, train_target='policy')
 				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
@@ -787,9 +824,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
-				obs_subsampled_cluster = obs[inds_2d[:,0]][:16+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:16+1]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:16+1]#.reshape(-1)
+				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
+				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
 				cluster_loss_res, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='clustering')
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
@@ -839,16 +876,16 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			sil_score = silhouette_score(mb_Q,mb_Q.argmax(1))
 
 			wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
-                        "%s/avg_value"%(Config.ENVIRONMENT):avg_value,
-                        "%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
-                        "%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
-                        "%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
-                        "%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
-                        "%s/cluster_loss"%(Config.ENVIRONMENT):cluster_loss_res,
+						"%s/avg_value"%(Config.ENVIRONMENT):avg_value,
+						"%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
+						"%s/eplenmean"%(Config.ENVIRONMENT):ep_len_mean,
+						"%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
+						"%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
+						"%s/cluster_loss"%(Config.ENVIRONMENT):cluster_loss_res,
 						"%s/silhouette_score"%(Config.ENVIRONMENT):sil_score,
 						'%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
 						'%s/myow_loss'%(Config.ENVIRONMENT):myow_loss_res,
-                        "%s/custom_step"%(Config.ENVIRONMENT):step})
+						"%s/custom_step"%(Config.ENVIRONMENT):step})
 			
 			# if step % (60*256*32) == 0: # every 1M or so
 			# 	from collections import Counter
