@@ -49,6 +49,9 @@ class ConfigSingle(object):
         # For dropout, use SNI with lambda=0.5 
         bool_keys.append(('sni2', 'sni2', True))
 
+        # For exponential moving average updates on target encoder
+        bool_keys.append(('ema', 'ema'))
+
         ### Others:
 
         # Long training for 200M time steps
