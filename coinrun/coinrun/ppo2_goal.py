@@ -409,6 +409,8 @@ class Model(object):
 			adv_std_i = np.std(advs_i, axis=0, keepdims=True)
 			advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
 
+			adv_ratio = adv_mean / adv_mean_i
+
 			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
 						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, train_model.REP_PROC:np.concatenate([np.expand_dims(original_obs[0],0),original_obs],0), train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
 						}
@@ -420,7 +422,7 @@ class Model(object):
 				return sess.run(
 						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, myow_loss, train_model.codes, _train],
 						td_map
-					)[:-1]
+					)[:-1], adv_ratio
 			elif train_target=='clustering':
 				return sess.run(
 						[cluster_loss, myow_loss, train_model.codes, proto_loss, _train_aux],
@@ -810,7 +812,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
 				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='clustering')
 				total_proto_ce_loss += proto_ce_loss
-
 		# compute proper intrinsic reward before PPO updates
 		if Config.INTRINSIC and Config.HARD_CODES:
 			# compute log CE reward scaling
@@ -834,7 +835,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
-				res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster,act_subsampled_cluster, *slices, train_target='policy')
+				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,r_cluster,act_subsampled_cluster, *slices, train_target='policy')
 				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
 		
@@ -895,6 +896,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 						"%s/silhouette_score"%(Config.ENVIRONMENT):sil_score,
 						'%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
 						'%s/myow_loss'%(Config.ENVIRONMENT):myow_loss_res,
+						'%s/adv_ratio'%(Config.ENVIRONMENT):adv_ratio,
 						"%s/custom_step"%(Config.ENVIRONMENT):step})
 			
 			# if step % (60*256*32) == 0: # every 1M or so
