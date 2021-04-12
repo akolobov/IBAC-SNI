@@ -259,9 +259,10 @@ class Model(object):
 		rep_loss = None
 		SKILLS = tf.compat.v1.placeholder(tf.float32, shape=[nbatch_train, Config.N_SKILLS], name='mb_skill')
 		A = train_model.pdtype.sample_placeholder([None])
-		ADV = tf.compat.v1.placeholder(tf.float32, [None])
+		STEP = tf.compat.v1.placeholder(tf.float32, [],name='STEP')
+		ADV_1 = tf.compat.v1.placeholder(tf.float32, [None], name='ADV')
 		ADV_2 = tf.compat.v1.placeholder(tf.float32, [None])
-		ADV = ADV + ADV_2
+		
 		R = tf.compat.v1.placeholder(tf.float32, [None])
 		R_i = tf.compat.v1.placeholder(tf.float32, [None])
 		OLDNEGLOGPAC = tf.compat.v1.placeholder(tf.float32, [None])
@@ -269,6 +270,7 @@ class Model(object):
 		OLDVPRED_i = tf.compat.v1.placeholder(tf.float32, [None])
 		LR = tf.compat.v1.placeholder(tf.float32, [])
 		CLIPRANGE = tf.compat.v1.placeholder(tf.float32, [])
+		
 		# VF loss
 		vpred = train_model.vf_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
 		vpredclipped = OLDVPRED + tf.clip_by_value(train_model.vf_train - OLDVPRED, - CLIPRANGE, CLIPRANGE)
@@ -282,6 +284,7 @@ class Model(object):
 		vf_losses2_i = tf.square(vpredclipped_i - R_i)
 		vf_loss_i = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1_i, vf_losses2_i))
 
+		ADV = ADV_1 + ADV_2*train_model.R_I_SCALE #(Config.INTRINSIC_REWARD_DECAY ** STEP)
 		neglogpac_train = train_model.pd_train[0].neglogp(A)
 		ratio_train = tf.exp(OLDNEGLOGPAC - neglogpac_train)
 		pg_losses_train = -ADV * ratio_train
@@ -409,7 +412,7 @@ class Model(object):
 
 		
 		
-		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, original_obs, act_cluster, r_cluster, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs,  states=None, train_target='policy'):
+		def train(lr, cliprange, states_nce, anchors_nce, labels_nce, original_obs, act_cluster, r_cluster, curr_step, obs, returns, returns_i, masks, actions, values, values_i, skills, neglogpacs,   states=None, train_target='policy'):
 			advs = returns - values
 			adv_mean = np.mean(advs, axis=0, keepdims=True)
 			adv_std = np.std(advs, axis=0, keepdims=True)
@@ -419,12 +422,12 @@ class Model(object):
 			adv_mean_i = np.mean(advs_i, axis=0, keepdims=True)
 			adv_std_i = np.std(advs_i, axis=0, keepdims=True)
 			advs_i = (advs_i - adv_mean_i) / (adv_std_i + 1e-8)
-
+			step = curr_step
 			# grab normalized advantage mean
 			adv_ratio = np.mean(advs_i / advs, axis=0, keepdims=True)
 
-			td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
-						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills, train_model.REP_PROC:original_obs, train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
+			td_map = {train_model.X:obs, A:actions, ADV_1:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
+						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills,  STEP:step, train_model.REP_PROC:original_obs, train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
 						}
 			if states is not None:
 				td_map[train_model.S] = states
@@ -585,23 +588,15 @@ class Runner(AbstractEnvRunner):
 		
 		if intrinsic and Config.HARD_CODES:
 			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
-			print('codes shape', mb_codes.shape)
-			print('u_t shape', mb_u_t.shape)
-			print('z_t shape', mb_z_t_1.shape)
+			mb_rewards_i = mb_codes.argmax(-1).transpose()
 			# for each observation, find the most likely code/cluster
-			hard_codes = np.argmax(mb_codes.reshape(-1,Config.N_SKILLS), axis=1)
-			print('hard codes', hard_codes.shape)
-			# mask to find states relevant to the current code
-			print('z val', z)
-			masked_arr = np.ma.masked_equal(hard_codes, z)
-			print('mask codes 1', masked_arr.shape)
-			print('masked arr type', type(masked_arr))
-			masked_codes = masked_arr.mask
-			print('mask codes 2', masked_codes.shape)
-			# rewards are 1 for states with the current code, zero else
-			code_rewards = masked_codes*1
-			print('code shape', code_rewards.shape)
-			mb_rewards_i = np.reshape(code_rewards, (256, 32))
+			# hard_codes = np.argmax(mb_codes.reshape(-1,Config.N_SKILLS), axis=1)
+			# # mask to find states relevant to the current code
+			# masked_arr = np.ma.masked_equal(hard_codes, z)
+			# masked_codes = masked_arr.mask
+			# # rewards are 1 for states with the current code, zero else
+			# code_rewards = masked_codes*1
+			# mb_rewards_i = np.reshape(code_rewards, (256, 32))
 
 		elif intrinsic:
 			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
@@ -638,7 +633,7 @@ class Runner(AbstractEnvRunner):
 			mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
 			
 		mb_returns = mb_advs + mb_values
-		return (mb_obs, mb_returns, mb_dones, mb_actions, *map(sf01, (mb_values, mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1, mb_codes)),
+		return (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, *map(sf01, ( mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1, mb_codes)),
 			states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, mb_rewards_i, last_values_i)
 
 	def compute_intrinsic_returns(self, mb_rewards_i, mb_values_i, last_values_i, mb_dones):
@@ -745,11 +740,15 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	name = "%s__%s__%f__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT,np.random.randint(100000000))
 	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	PRETRAIN = False
+	BOLZTMANN_PROTO_SKILL_SELECTION = True
+	cluster_returns = np.zeros(Config.N_SKILLS)
 	if Config.HARD_CODES:
 		print('USING HARD CLUSTERS')
 	if Config.INTRINSIC:
 		print('USING INTRINSIC REWARD')
+
 	for update in range(start_update+1, nupdates+1):
+		curr_step = update
 		if Config.EMA:
 			# update momentum encoder
 			params = tf.compat.v1.trainable_variables()
@@ -767,17 +766,23 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
 		mpi_print('collecting rollouts...')
 		run_tstart = time.time()
+
+		packed = runner.run(update_frac=update/nupdates, z=curr_z, pretrain=PRETRAIN, intrinsic=Config.INTRINSIC)
+		obs, returns, masks, actions, values, values_i, skill, neglogpacs, infos, u_t, z_t_1, mb_Q, states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, rewards_i, last_values_i, = packed
+
 		if z_iter < Config.SKILL_EPOCHS:
-			packed = runner.run(update_frac=update/nupdates, z=curr_z, pretrain=PRETRAIN, intrinsic=Config.INTRINSIC)
 			z_iter += 1
 		else:
 			# sample new skill/code for current episodes
-			curr_z = np.random.randint(0, high=Config.N_SKILLS)
-			packed = runner.run(update_frac=update/nupdates, z=curr_z, pretrain=PRETRAIN)
+			if BOLZTMANN_PROTO_SKILL_SELECTION:
+				print('Empirical cluster return estimates:')
+				print(cluster_returns)
+				# curr_z = np.random.choice([i for i in range(Config.N_SKILLS)],size=1,replace=False,p=np.exp(cluster_returns)/np.sum(np.exp(cluster_returns))).item()
+				curr_z = cluster_returns.argmax()
+			else:
+				curr_z = np.random.randint(0, high=Config.N_SKILLS)
 			z_iter = 0
-
-		obs, returns, masks, actions, values, values_i, skill, neglogpacs, infos, u_t, z_t_1, mb_Q, states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, rewards_i, last_values_i, = packed
-
+		
 		skill = np.reshape(skill, (-1, Config.N_SKILLS))
 		# reshape our augmented state vectors to match first dim of observation array
 		# (mb_size*num_envs, 64*64*RGB)
@@ -813,11 +818,17 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
-				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='clustering')
+				v_cluster = values[inds_2d[:,0]][:N_BATCH_AUX]
+				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
+				if BOLZTMANN_PROTO_SKILL_SELECTION:
+					cluster_returns = np.zeros(Config.N_SKILLS)
+					cluster_idx = mb_Q.argmax(1)
+					for i in range(Config.N_SKILLS):
+						cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
 				total_proto_ce_loss += proto_ce_loss
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
@@ -827,17 +838,17 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
-				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
-				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='myow')
+				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
 
 		# compute proper intrinsic reward before PPO updates
 		if Config.INTRINSIC and Config.HARD_CODES:
 			# compute log CE reward scaling
-			scale_ce_i = np.log(1/total_proto_ce_loss + 1)
-			returns_i = runner.compute_intrinsic_returns(rewards_i*scale_ce_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
+			# scale_ce_i = np.log(1/total_proto_ce_loss + 1)
+			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
 		elif Config.INTRINSIC:
 			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
 		else:
@@ -852,11 +863,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
-				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), values, values_i, skill, neglogpacs))
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
-				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, *slices, train_target='policy')
+				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
 				total_adv_ratio += adv_ratio
 				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
@@ -908,7 +919,12 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			mpi_print('----\n')
 			
 			mb_Q = mb_Q.reshape(-1,Config.N_SKILLS)
-			sil_score = silhouette_score(mb_Q,mb_Q.argmax(1))
+			try:
+				sil_score = silhouette_score(mb_Q,mb_Q.argmax(1))
+			except:
+				sil_score = 1
+
+			r_i_scale = sess.run(model.train_model.R_I_SCALE)
 
 			wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
 						"%s/avg_value"%(Config.ENVIRONMENT):avg_value,
@@ -921,6 +937,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 						'%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
 						'%s/myow_loss'%(Config.ENVIRONMENT):myow_loss_res,
 						'%s/mean_adv_ratio'%(Config.ENVIRONMENT):mean_adv_ratio,
+						'%s/r_i_scale'%(Config.ENVIRONMENT):r_i_scale,
 						"%s/custom_step"%(Config.ENVIRONMENT):step})
 			
 			# if step % (60*256*32) == 0: # every 1M or so

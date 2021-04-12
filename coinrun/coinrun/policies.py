@@ -209,6 +209,7 @@ class CnnPolicy(object):
             self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
             self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None, Config.NUM_ENVS])
             self.A_cluster = self.pdtype.sample_placeholder([None, Config.NUM_ENVS])
+            
         if Config.AGENT == 'ppo_goal':
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
@@ -355,26 +356,27 @@ class CnnPolicy(object):
             #     target_h_seq = tf.reshape( tf.concat([target_h_t,target_h_a_t,target_h_tp1],2), (-1,256*3))
             #     self.z_t_1 = get_online_predictor(n_in=256*3,n_out=128,prefix='SH_z_pred')(target_h_seq)
             self.z_t_1 = self.z_t
-            print('gog', tf.shape(self.z_t_1))
             # scores: n_batch x n_clusters
             scores = tf.linalg.matmul(tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0], tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0])
             self.codes = sinkhorn(scores=scores)
+
+            
             if Config.MYOW:
                 """
                 Compute average cluster reward 1/N_i \sum_{C_i} V^pi(s_j)
                 """
-                cluster_idx = tf.argmax(scores,1)
+                cluster_idx = tf.argmax(scores,1)  
                 if False:
                     reward_scale = []
                     for i in range(Config.N_SKILLS):
                         filter_ = tf.cast(tf.fill(tf.shape(self.R_cluster), i),tf.float32)
-                        mask = tf.cast(tf.math.equal(filter_ , self.R_cluster),tf.float32)
+                        mask = tf.cast(tf.math.equal(filter_ , self.codes),tf.float32)
                         rets_cluster = tf.reduce_mean(mask * self.R_cluster)
                         reward_scale.append( rets_cluster )
-                    reward_scale = tf.stack(reward_scale)
+                    self.cluster_returns = tf.stack(reward_scale)
                     # Predict the average cluster value from the prototype (centroid)
                     with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                        self.cluster_value_mse_loss = tf.reduce_mean( (get_predictor(n_in=128,n_out=1)(tf.transpose(self.protos)) - reward_scale)**2 )
+                        self.cluster_value_mse_loss = tf.reduce_mean( (get_predictor(n_in=128,n_out=1)(tf.transpose(self.protos)) - self.cluster_returns)**2 )
                 else:
                     self.cluster_value_mse_loss = 0.
 
@@ -388,7 +390,7 @@ class CnnPolicy(object):
                 # get K closest vectors by Sinkhorn scores
                 dist = _compute_distance(scores,scores)
                 # dist = _compute_distance(y_online,y_online)
-                k_t = 1
+                k_t = 3
                 vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
                 
                 # N_target = y_target
@@ -416,7 +418,11 @@ class CnnPolicy(object):
 
                 self.myow_loss += self.cluster_value_mse_loss
 
-        
+            """
+            Intrinsic rewards
+            """
+            with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
+                self.R_I_SCALE = tf.compat.v1.get_variable('R_I_SCALE', initializer=tf.random.normal(shape=(1,)))
                 
         if Config.AGENT == 'ppg':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -545,6 +551,9 @@ class CnnPolicy(object):
         def compute_hard_codes(ob):
             return sess.run([self.codes, self.u_t, self.z_t_1], {REP_PROC: ob})
 
+        def compute_cluster_returns(returns):
+            return sess.run([self.cluster_returns],{self.R_cluster:returns})
+
         self.X = X
         self.processed_x = processed_x
         self.step = step
@@ -558,6 +567,7 @@ class CnnPolicy(object):
         self.Z = Z
         self.compute_codes = compute_codes
         self.compute_hard_codes = compute_hard_codes
+        self.compute_cluster_returns = compute_cluster_returns
 
 
 def get_policy():

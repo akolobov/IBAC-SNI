@@ -23,8 +23,10 @@ python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --shor
 python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 --itr
 (with mine your own view)
 python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 --myow
+(with intrinsic reward decay)
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 -itr_decay 0.9
 (all the above)
-python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 --itr --hgoal --ema --myow
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 --itr --hgoal --ema --myow 
 RND:
 python3 -m coinrun.train_agent --env coinrun --run-id rnd --num-levels 0 --short --agent ppo_rnd
 

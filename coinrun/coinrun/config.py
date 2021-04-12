@@ -55,6 +55,9 @@ class ConfigSingle(object):
         # For computing intrinsic reward
         bool_keys.append(('itr', 'intrinsic'))
 
+        # Decay for weight on intrinsic reward. Default values anneals to 1e-4 at the end of 25M steps
+        type_keys.append(('itr_decay', 'intrinsic_reward_decay', float, 0.997))
+
         # for Mine Your Own View SSL prediction
         bool_keys.append(('myow','myow'))
         ### Others:
