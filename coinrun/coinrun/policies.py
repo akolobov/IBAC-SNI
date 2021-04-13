@@ -13,6 +13,8 @@ from mpi4py import MPI
 from gym.spaces import Discrete, Box
 from coinrun.config import Config
 
+from tensorflow.keras import initializers
+
 
 from coinrun.config import Config
 
@@ -127,9 +129,13 @@ def get_predictor(n_in=256,n_out=256,prefix='predictor'):
     h = tf.keras.Model(inputs, p2)
     return h
 
-def get_linear_layer(n_in=256,n_out=128,prefix='linear_predictor'):
+def get_linear_layer(n_in=256,n_out=128,prefix='linear_predictor',init=None):
     inputs = tf.keras.layers.Input((n_in, ))
-    p = tf.keras.layers.Dense(n_out,name=prefix+'_linear')(inputs)
+    if init is None:
+        p = tf.keras.layers.Dense(n_out,name=prefix+'_linear')(inputs)
+    else:
+        p = tf.keras.layers.Dense(n_out,name=prefix+'_linear',kernel_initializer=init,bias_initializer=initializers.Zeros())(inputs)
+        
     h = tf.keras.Model(inputs, p)
     return h
 
@@ -339,22 +345,14 @@ class CnnPolicy(object):
                 self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
                 h_t = self.h_codes[:,:-1]
                 h_tp1 = self.h_codes[:,1:]
-                h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")(tf.reshape(tf.one_hot(self.A_cluster,ac_space.n),(-1,ac_space.n)) ), (-1,Config.NUM_ENVS,256)), (1,0,2))
-                h_seq = tf.reshape( tf.concat([h_t,h_a_t,h_tp1],2), (-1,256*3))
-                self.z_t = get_online_predictor(n_in=256*3,n_out=128,prefix='SH_z_pred')(h_seq)
+                act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+                # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
+                h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
+                h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+                self.z_t = get_online_predictor(n_in=256*2,n_out=128,prefix='SH_z_pred')(h_seq)
                 
                 self.u_t = get_predictor(n_in=128,n_out=128,prefix='SH_u_pred')(self.z_t)
                 
-            # with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-            #     act_condit_target, act_invariant_target, _, _ = choose_cnn(obs_cluster)
-            #     # act_condit_target = tf.stop_gradient(act_condit_target)
-            #     # act_invariant_target = tf.stop_gradient(act_invariant_target)
-            #     target_h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
-            #     target_h_t = target_h_codes[:,:-1]
-            #     target_h_tp1 = target_h_codes[:,1:]
-            #     target_h_a_t = get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")(tf.transpose(tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,Config.NUM_ENVS,ac_space.n)),(1,0,2)))
-            #     target_h_seq = tf.reshape( tf.concat([target_h_t,target_h_a_t,target_h_tp1],2), (-1,256*3))
-            #     self.z_t_1 = get_online_predictor(n_in=256*3,n_out=128,prefix='SH_z_pred')(target_h_seq)
             self.z_t_1 = self.z_t
             # scores: n_batch x n_clusters
             scores = tf.linalg.matmul(tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0], tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0])
@@ -390,17 +388,17 @@ class CnnPolicy(object):
                 # get K closest vectors by Sinkhorn scores
                 dist = _compute_distance(scores,scores)
                 # dist = _compute_distance(y_online,y_online)
-                k_t = 3
+                k_t = 1
                 vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
                 
                 # N_target = y_target
                 with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                    v_online_net = get_predictor(n_in=256*3,n_out=256,prefix='MYOW_v_pred')
+                    v_online_net = get_predictor(n_in=256*2,n_out=256,prefix='MYOW_v_pred')
                     r_online_net = get_predictor(n_out=256,prefix='MYOW_r_pred')
                     v_online = v_online_net(y_online)
                     r_online = r_online_net(v_online)
                 with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                    v_target_net = get_predictor(n_in=256*3,n_out=256,prefix='MYOW_v_pred')
+                    v_target_net = get_predictor(n_in=256*2,n_out=256,prefix='MYOW_v_pred')
                     r_target_net = get_predictor(n_out=256,prefix='MYOW_r_pred')
 
                 self.myow_loss = 0.
@@ -421,8 +419,10 @@ class CnnPolicy(object):
             """
             Intrinsic rewards
             """
-            with tf.compat.v1.variable_scope("model", reuse=tf.compat.v1.AUTO_REUSE):
-                self.R_I_SCALE = tf.compat.v1.get_variable('R_I_SCALE', initializer=tf.random.normal(shape=(1,)))
+            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+                self.R_I_SCALE = tf.nn.relu(get_linear_layer(n_in=256,n_out=1,prefix='r_i_scale',init=initializers.RandomNormal(stddev=0.11))(tf.reshape(tf.stop_gradient(h_tp1),(-1,256))))
+
+                # self.h = get_predictor(n_in=256+Config.N_SKILLS,n_out=256)(tf.concat([self.h,tf.stop_gradient(scores)],1))
                 
         if Config.AGENT == 'ppg':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -471,7 +471,7 @@ class CnnPolicy(object):
                 else:
                     self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
                 if Config.AGENT == 'ppo_rnd' or Config.AGENT == 'ppo_diayn' or Config.AGENT == 'ppo_goal':
-                    self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0]
+                    self.vf_i_train = fc(tf.stop_gradient(self.h), 'v_i', 1)[:, 0]
                     self.vf_i_run = self.vf_i_train
                 if  (Config.CUSTOM_REP_LOSS and Config.AGENT == 'ppo'):
                     self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0]

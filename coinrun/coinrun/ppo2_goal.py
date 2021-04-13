@@ -278,13 +278,18 @@ class Model(object):
 		vf_losses2 = tf.square(vpredclipped - R)
 		vf_loss = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1, vf_losses2))
 
-		vpred_i = train_model.vf_i_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
-		vpredclipped_i = OLDVPRED_i + tf.clip_by_value(vpred_i - OLDVPRED_i, - CLIPRANGE, CLIPRANGE)
-		vf_losses1_i = tf.square(vpred_i - R_i)
-		vf_losses2_i = tf.square(vpredclipped_i - R_i)
-		vf_loss_i = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1_i, vf_losses2_i))
+		if Config.INTRINSIC:
+			ADV = ADV_1 + ADV_2*train_model.R_I_SCALE #(Config.INTRINSIC_REWARD_DECAY ** STEP)
 
-		ADV = ADV_1 + ADV_2*train_model.R_I_SCALE #(Config.INTRINSIC_REWARD_DECAY ** STEP)
+			vpred_i = train_model.vf_i_train  # Same as vf_run for SNI and default, but noisy for SNI2 while the boostrap is not
+			vpredclipped_i = OLDVPRED_i + tf.clip_by_value(vpred_i - OLDVPRED_i, - CLIPRANGE, CLIPRANGE)
+			vf_losses1_i = tf.square(vpred_i - R_i)
+			vf_losses2_i = tf.square(vpredclipped_i - R_i)
+			vf_loss_i = .5 * tf.reduce_mean(input_tensor=tf.maximum(vf_losses1_i, vf_losses2_i))
+		else:
+			vf_loss_i = tf.constant(0.)
+			ADV = ADV_1
+
 		neglogpac_train = train_model.pd_train[0].neglogp(A)
 		ratio_train = tf.exp(OLDNEGLOGPAC - neglogpac_train)
 		pg_losses_train = -ADV * ratio_train
@@ -370,8 +375,8 @@ class Model(object):
 		else:
 			myow_loss = tf.reduce_mean(tf.zeros(1))
 
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + vf_loss_i*vf_coef# + cluster_loss  #+ myow_loss #+ vpred_loss # + vf_loss_i*vf_coef
-		aux_loss =  proto_loss #+ cluster_loss # vf_loss_i*vf_coef + vpred_loss cluster_loss*Config.REP_LOSS_WEIGHT +
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
+		aux_loss =  proto_loss + vf_loss_i*vf_coef
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -440,7 +445,7 @@ class Model(object):
 					)[:-1], adv_ratio
 			elif train_target=='clustering':
 				return sess.run(
-						[cluster_loss, myow_loss, train_model.codes, proto_loss, _train_aux],
+						[cluster_loss, myow_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, _train_aux],
 						td_map
 					)[:-1]
 			elif train_target=='myow':
@@ -823,7 +828,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				v_cluster = values[inds_2d[:,0]][:N_BATCH_AUX]
-				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
+				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
 				if BOLZTMANN_PROTO_SKILL_SELECTION:
 					cluster_returns = np.zeros(Config.N_SKILLS)
 					cluster_idx = mb_Q.argmax(1)
@@ -845,11 +850,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
 
 		# compute proper intrinsic reward before PPO updates
-		if Config.INTRINSIC and Config.HARD_CODES:
+		if Config.INTRINSIC:
 			# compute log CE reward scaling
 			# scale_ce_i = np.log(1/total_proto_ce_loss + 1)
-			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
-		elif Config.INTRINSIC:
 			returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
 		else:
 			returns_i = np.zeros_like(returns)
@@ -924,8 +927,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			except:
 				sil_score = 1
 
-			r_i_scale = sess.run(model.train_model.R_I_SCALE)
-
 			wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
 						"%s/avg_value"%(Config.ENVIRONMENT):avg_value,
 						"%s/custom_loss"%(Config.ENVIRONMENT):mean_cust_loss,
@@ -937,7 +938,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 						'%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
 						'%s/myow_loss'%(Config.ENVIRONMENT):myow_loss_res,
 						'%s/mean_adv_ratio'%(Config.ENVIRONMENT):mean_adv_ratio,
-						'%s/r_i_scale'%(Config.ENVIRONMENT):r_i_scale,
+						'%s/r_i_scale'%(Config.ENVIRONMENT):np.mean(r_i_scale),
 						"%s/custom_step"%(Config.ENVIRONMENT):step})
 			
 			# if step % (60*256*32) == 0: # every 1M or so
