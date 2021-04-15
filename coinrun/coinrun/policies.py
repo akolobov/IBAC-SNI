@@ -201,7 +201,7 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, None)
             TRAIN_NUM_STEPS = Config.NUM_STEPS//16
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
             CLUSTER_DIMS = 256
@@ -219,17 +219,19 @@ class CnnPolicy(object):
             self.A_cluster = self.pdtype.sample_placeholder([None, Config.NUM_ENVS], name='A_cluster')
             
         if Config.AGENT == 'ppo_goal':
-            X = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+            # fetch ob_t from joint observations for step
+            # X = REP_PROC[0, :, :, :, :]
+            X = REP_PROC #tf.reshape(REP_PROC, [-1, 64, 64, 3])
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
                 self.train_dropout_assign_ops = fast_dropout_assigned_ops
                 self.run_dropout_assign_ops = slow_dropout_assign_ops
                 self.h =  tf.concat([act_condit, act_invariant], axis=1)
-            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
-                self.train_dropout_assign_ops = fast_dropout_assigned_ops
-                self.run_dropout_assign_ops = slow_dropout_assign_ops
-                self.h =  tf.concat([act_condit, act_invariant], axis=1)
+            # with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+            #     act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
+            #     self.train_dropout_assign_ops = fast_dropout_assigned_ops
+            #     self.run_dropout_assign_ops = slow_dropout_assign_ops
+            #     self.h =  tf.concat([act_condit, act_invariant], axis=1)
             
         else:
             with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
@@ -446,10 +448,13 @@ class CnnPolicy(object):
             """
             if Config.CLUSTER_CONDIT_POLICY:
                 concat_code = tf.stop_gradient(tf.reshape(self.codes, [-1, Config.N_SKILLS]))
+                self.h = self.h[Config.NUM_ENVS:]
                 # print(self.h)
                 # print(concat_code)
-                #self.h = tf.concat([self.h, concat_code], axis=1)
+                self.h= tf.concat([self.h, concat_code], axis=1)
                 #h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+            else:
+                concat_code = tf.zeros([1,Config.N_SKILLS])
                 
         if Config.AGENT == 'ppg':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -528,8 +533,12 @@ class CnnPolicy(object):
                 a, v, v_i, neglogp, r_i  = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.skill_log_prob], {X: ob, Z_INT: skill_idx, Z: one_hot_skill})
                 return a, v, v_i, r_i, self.initial_state, neglogp
             elif Config.AGENT == 'ppo_goal':
-                a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {REP_PROC: ob, Z: one_hot_skill})
-                return a, v, v_i, self.initial_state, neglogp
+                if Config.CLUSTER_CONDIT_POLICY:
+                    a, v, v_i, neglogp, h, h_codes, ht, htp1, ccode = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.h, self.h_codes, h_t, h_tp1, concat_code], {REP_PROC: ob, Z: one_hot_skill})
+                    return a, v, v_i, self.initial_state, neglogp,  h, h_codes, ht, htp1, ccode
+                else:
+                    a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {REP_PROC: ob, Z: one_hot_skill})
+                    return a, v, v_i, self.initial_state, neglogp
             elif Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
                 a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})

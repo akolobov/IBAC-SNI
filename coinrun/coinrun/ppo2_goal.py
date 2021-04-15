@@ -431,8 +431,10 @@ class Model(object):
 			# grab normalized advantage mean
 			adv_ratio = np.mean(advs_i / advs, axis=0, keepdims=True)
 
+			# flatten obs
+			
 			td_map = {train_model.X:obs, A:actions, ADV_1:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
-						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills,  STEP:step, train_model.REP_PROC:original_obs, train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
+						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills,  STEP:step, train_model.REP_PROC:original_obs.reshape(-1, 64, 64, 3), train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
 						}
 			if states is not None:
 				td_map[train_model.S] = states
@@ -547,26 +549,45 @@ class Runner(AbstractEnvRunner):
 		# the skill remains fixed for each minibatch 
 		mb_skill = np.asarray([one_hot_skill]*self.nsteps, dtype=np.int32)
 		# For n in range number of steps
-		for _ in range(self.nsteps):
+		for i in range(self.nsteps):
 			# Given observations, get action value and neglopacs
 			# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-			obs_exp = np.expand_dims(self.obs, 0)
-			actions, values, values_i, self.states, neglogpacs = self.model.step(obs_exp,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			if i == 0:
+				ob_tm1 = np.expand_dims(self.obs, 0)
+			ob_t = np.expand_dims(self.obs, 0)
+			# concat o_t and o_t_m1 for joint step clustering on step function
+			joint_ob = np.concatenate([ob_tm1, ob_t], 0)
+			if Config.CLUSTER_CONDIT_POLICY:
+				actions, values, values_i, self.states, neglogpacs, h, h_codes, ht, htp1, ccode = self.model.step(joint_ob.reshape(-1, 64, 64, 3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			else:
+				actions, values, values_i, self.states, neglogpacs = self.model.step(joint_ob.reshape(-1,64,64,3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
 			mb_values_i.append(values_i)
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
-			
+
+			# offset past observation
+			ob_tm1 = ob_t.copy()
 
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
 			# eval for zero shot generalization
-			eval_obs_exp = np.expand_dims(self.eval_obs, 0)
-			eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(eval_obs_exp, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			if i == 0:
+				eval_ob_tm1 = np.expand_dims(self.eval_obs, 0)
+			eval_ob_t = np.expand_dims(self.eval_obs, 0)
+			# concat o_t and o_t_m1 for joint step clustering on step function
+			joint_ob_eval = np.concatenate([eval_ob_tm1, eval_ob_t], 0)
+			if Config.CLUSTER_CONDIT_POLICY:
+				eval_actions, eval_values, _, eval_states, eval_neglogpacs, h, h_codes, ht, htp1, ccode = self.model.step(joint_ob_eval.reshape(-1,64,64,3), update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			else:
+				eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(joint_ob_eval.reshape(-1,64,64,3), update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
+
+			# offset past observation for eval
+			eval_ob_tm1 = eval_ob_t.copy()
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
 				if maybeepinfo: epinfos.append(maybeepinfo)
@@ -589,12 +610,12 @@ class Runner(AbstractEnvRunner):
 		mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
 		mb_infos = np.asarray(mb_infos, dtype=np.float32)
 		mb_dones = np.asarray(mb_dones, dtype=np.bool)	
-		last_values = self.model.value(obs_exp, update_frac, one_hot_skill=one_hot_skill)[0]
-		last_values_i = self.model.value_i(obs_exp, update_frac, one_hot_skill=one_hot_skill)
+		last_values = self.model.value(joint_ob.reshape(-1, 64, 64, 3), update_frac, one_hot_skill=one_hot_skill)[0]
+		last_values_i = self.model.value_i(joint_ob.reshape(-1, 64, 64, 3), update_frac, one_hot_skill=one_hot_skill)
 		# compute codes
 		
 		if intrinsic and Config.HARD_CODES:
-			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0).reshape(-1, 64, 64, 3),mb_actions)
 			mb_rewards_i = mb_codes.argmax(-1).transpose()
 			# for each observation, find the most likely code/cluster
 			# hard_codes = np.argmax(mb_codes.reshape(-1,Config.N_SKILLS), axis=1)
@@ -606,7 +627,7 @@ class Runner(AbstractEnvRunner):
 			# mb_rewards_i = np.reshape(code_rewards, (256, 32))
 
 		elif intrinsic:
-			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0).reshape(-1, 64, 64, 3),mb_actions)
 			sess = tf.compat.v1.get_default_session()
 			clusters = sess.run(self.model.train_model.protos).transpose(1,0)
 			nearest_Q_clusters = clusters[mb_codes.argmax(2).reshape(-1)]
