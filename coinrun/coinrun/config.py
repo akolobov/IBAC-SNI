@@ -55,6 +55,9 @@ class ConfigSingle(object):
         # For computing intrinsic reward
         bool_keys.append(('itr', 'intrinsic'))
 
+        # For enabling a cluster conditioned Policy
+        bool_keys.append(('ccp', 'cluster_condit_policy'))
+
         # Decay for weight on intrinsic reward. Default values anneals to 1e-4 at the end of 25M steps
         type_keys.append(('itr_decay', 'intrinsic_reward_decay', float, 0.997))
 

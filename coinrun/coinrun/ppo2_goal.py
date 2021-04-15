@@ -550,7 +550,8 @@ class Runner(AbstractEnvRunner):
 		for _ in range(self.nsteps):
 			# Given observations, get action value and neglopacs
 			# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-			actions, values, values_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			obs_exp = np.expand_dims(self.obs, 0)
+			actions, values, values_i, self.states, neglogpacs = self.model.step(obs_exp,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
@@ -563,7 +564,8 @@ class Runner(AbstractEnvRunner):
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
 			# eval for zero shot generalization
-			eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(self.eval_obs, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			eval_obs_exp = np.expand_dims(self.eval_obs, 0)
+			eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(eval_obs_exp, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
@@ -587,8 +589,8 @@ class Runner(AbstractEnvRunner):
 		mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
 		mb_infos = np.asarray(mb_infos, dtype=np.float32)
 		mb_dones = np.asarray(mb_dones, dtype=np.bool)	
-		last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
-		last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
+		last_values = self.model.value(obs_exp, update_frac, one_hot_skill=one_hot_skill)[0]
+		last_values_i = self.model.value_i(obs_exp, update_frac, one_hot_skill=one_hot_skill)
 		# compute codes
 		
 		if intrinsic and Config.HARD_CODES:
@@ -781,9 +783,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			# sample new skill/code for current episodes
 			if BOLZTMANN_PROTO_SKILL_SELECTION:
 				print('Empirical cluster return estimates:')
-				print(cluster_returns)
-				# curr_z = np.random.choice([i for i in range(Config.N_SKILLS)],size=1,replace=False,p=np.exp(cluster_returns)/np.sum(np.exp(cluster_returns))).item()
-				curr_z = cluster_returns.argmax()
+				#
+				curr_z = np.random.choice([i for i in range(Config.N_SKILLS)],size=1,replace=False,p=np.exp(cluster_returns)/np.sum(np.exp(cluster_returns))).item()
+				# curr_z = cluster_returns.argmax()
 			else:
 				curr_z = np.random.randint(0, high=Config.N_SKILLS)
 			z_iter = 0
