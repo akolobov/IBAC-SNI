@@ -204,7 +204,9 @@ class CnnPolicy(object):
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
-            self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(128, Config.N_SKILLS)), trainable=True, name='Prototypes')
+            CLUSTER_DIMS = 256
+            HIDDEN_DIMS_SSL = 256
+            self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(CLUSTER_DIMS, Config.N_SKILLS)), trainable=True, name='Prototypes')
             self.A = self.pdtype.sample_placeholder([None],name='A')
             # trajectories of length m, for N policy heads.
             self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
@@ -214,37 +216,40 @@ class CnnPolicy(object):
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
             self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
             self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None, Config.NUM_ENVS])
-            self.A_cluster = self.pdtype.sample_placeholder([None, Config.NUM_ENVS])
+            self.A_cluster = self.pdtype.sample_placeholder([None, Config.NUM_ENVS], name='A_cluster')
             
-        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-            act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
+        X = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+        # with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+        #     act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
+        #     self.train_dropout_assign_ops = fast_dropout_assigned_ops
+        #     self.run_dropout_assign_ops = slow_dropout_assign_ops
+        #     self.h =  tf.concat([act_condit, act_invariant], axis=1)
+        with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+            act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
             self.run_dropout_assign_ops = slow_dropout_assign_ops
+        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             self.h =  tf.concat([act_condit, act_invariant], axis=1)
 
-        with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-            act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(processed_x)
-            self.train_dropout_assign_ops = fast_dropout_assigned_ops
-            self.run_dropout_assign_ops = slow_dropout_assign_ops
-            self.h =  tf.concat([act_condit, act_invariant], axis=1)
-        
+        """
+        Clustering part
+        """
+
         with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-            """
-            Clustering part
-            """
-            obs_cluster = tf.reshape(REP_PROC, [-1, 64, 64, 3])
             # h_codes: n_batch x n_t x n_rkhs
-            act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
+            act_condit, act_invariant, _, _ = choose_cnn(X)
             self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
             h_t = self.h_codes[:,:-1]
             h_tp1 = self.h_codes[:,1:]
-            act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+            
             # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
             h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
-            h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
-            self.z_t = get_online_predictor(n_in=256*2,n_out=128,prefix='SH_z_pred')(h_seq)
+            # if not Config.CLUSTER_CONDIT_POLICY:
+            #     act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+            #     h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+            self.z_t = get_online_predictor(n_in=256*2,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
             
-            self.u_t = get_predictor(n_in=128,n_out=128,prefix='SH_u_pred')(self.z_t)
+            self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
             
         self.z_t_1 = self.z_t
         # scores: n_batch x n_clusters
@@ -267,32 +272,44 @@ class CnnPolicy(object):
                 self.cluster_returns = tf.stack(reward_scale)
                 # Predict the average cluster value from the prototype (centroid)
                 with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                    self.cluster_value_mse_loss = tf.reduce_mean( (get_predictor(n_in=128,n_out=1)(tf.transpose(self.protos)) - self.cluster_returns)**2 )
+                    self.cluster_value_mse_loss = tf.reduce_mean( (get_predictor(n_in=CLUSTER_DIMS,n_out=1)(tf.transpose(self.protos)) - self.cluster_returns)**2 )
             else:
                 self.cluster_value_mse_loss = 0.
 
             """
             MYOW where k-NN neighbors are replaced by Sinkhorn clusters
             """
+            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+                # h_codes: n_batch x n_t x n_rkhs
+                act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
+                h_codes_target =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
+                h_t_target = h_codes_target[:,:-1]
+                h_tp1_target = h_codes_target[:,1:]
+                
+                # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
+                h_seq_target = tf.reshape( tf.concat([h_t_target,h_tp1_target],2), (-1,256*2))
+                # if not Config.CLUSTER_CONDIT_POLICY:
+                #     act_one_hot_target = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+                #     h_seq_target = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq_target,1),1), act_one_hot_target]),1),1)
             y_online = h_seq
-            y_target = tf.stop_gradient(h_seq)
+            y_target = tf.stop_gradient(h_seq_target)
             
 
             # get K closest vectors by Sinkhorn scores
-            dist = _compute_distance(scores,scores)
+            dist = _compute_distance(y_online,y_online)
             # dist = _compute_distance(y_online,y_online)
-            k_t = 1
+            k_t = 3
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
             
             # N_target = y_target
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                v_online_net = get_predictor(n_in=256*2,n_out=256,prefix='MYOW_v_pred')
-                r_online_net = get_predictor(n_out=256,prefix='MYOW_r_pred')
+                v_online_net = get_predictor(n_in=256*2,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred')
+                r_online_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred')
                 v_online = v_online_net(y_online)
                 r_online = r_online_net(v_online)
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                v_target_net = get_predictor(n_in=256*2,n_out=256,prefix='MYOW_v_pred')
-                r_target_net = get_predictor(n_out=256,prefix='MYOW_r_pred')
+                v_target_net = get_predictor(n_in=256*2,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred')
+                r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred')
 
             self.myow_loss = 0.
             for k in range(k_t):
@@ -304,7 +321,7 @@ class CnnPolicy(object):
                 self.myow_loss += ( tf.reduce_mean(cos_loss(r_online, v_target)) + tf.reduce_mean(cos_loss(r_target, v_online)) ) / k_t
 
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                phi_s = get_online_predictor(n_in=256,n_out=128,prefix='SH_z_pred')(tf.reshape(h_tp1,(-1,256)))
+                phi_s = get_online_predictor(n_in=256,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(tf.reshape(h_tp1,(-1,256)))
                 self.myow_loss += tf.reduce_mean(cos_loss(phi_s, tf.transpose(tf.gather(self.protos,cluster_idx,axis=1),(1,0)) ))
 
             self.myow_loss += self.cluster_value_mse_loss
@@ -316,7 +333,17 @@ class CnnPolicy(object):
             self.R_I_SCALE = tf.nn.relu(get_linear_layer(n_in=256,n_out=1,prefix='r_i_scale',init=initializers.RandomNormal(stddev=0.11))(tf.reshape(tf.stop_gradient(h_tp1),(-1,256))))
 
             # self.h = get_predictor(n_in=256+Config.N_SKILLS,n_out=256)(tf.concat([self.h,tf.stop_gradient(scores)],1))
-           
+
+        """
+        Condition on soft-cluster assignments for policy head (Cluster Conditioned Policy )
+        """
+        if Config.CLUSTER_CONDIT_POLICY:
+            concat_code = tf.stop_gradient(tf.reshape(self.codes, [-1, Config.N_SKILLS]))
+            # print(self.h)
+            # print(concat_code)
+            #self.h = tf.concat([self.h, concat_code], axis=1)
+            #h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+
         with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
                 self.pd_train = []
@@ -340,7 +367,7 @@ class CnnPolicy(object):
             # Plain Dropout version: Only fast updates / stochastic latent for VIB
             self.pd_run = self.pd_train
             self.vf_run = self.vf_train
-                
+            
 
             # For Dropout: Always change layer, so slow layer is never used
             self.run_dropout_assign_ops = []
@@ -354,17 +381,19 @@ class CnnPolicy(object):
         def step(ob, update_frac, skill_idx=None, one_hot_skill=None, nce_dict = {},  *_args, **_kwargs):
             if Config.REPLAY:
                 ob = ob.astype(np.float32)
-            a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {X: ob, Z: one_hot_skill})
+            a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {REP_PROC: ob, Z: one_hot_skill})
             return a, v, v_i, self.initial_state, neglogp
+            
 
         def rep_vec(ob, *_args, **_kwargs):
             return sess.run(self.h, {X: ob})
 
         def value(ob, update_frac, one_hot_skill=None, *_args, **_kwargs):
-            return sess.run(self.vf_run, {X: ob, Z: one_hot_skill})
+            return sess.run(self.vf_run, {REP_PROC: ob, Z: one_hot_skill})
+
 
         def value_i(ob, update_frac, one_hot_skill=None, *_args, **_kwargs):
-            return sess.run(self.vf_i_run, {X: ob, Z: one_hot_skill})
+            return sess.run(self.vf_i_run, {REP_PROC: ob, Z: one_hot_skill})
 
         def nce_fw_pass(nce_dict):
             return sess.run([self.vf_i_run,self.rep_loss],nce_dict)
