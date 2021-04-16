@@ -201,9 +201,9 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, None)
             TRAIN_NUM_STEPS = Config.NUM_STEPS//16
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, 64, 64, 3), name='Rep_Proc')
+            _, REP_PROC = observation_input(ob_space, None) #tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
-            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
+            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.N_SKILLS), name='Curr_skill')
             CLUSTER_DIMS = 256
             HIDDEN_DIMS_SSL = 256
             self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(CLUSTER_DIMS, Config.N_SKILLS)), trainable=True, name='Prototypes')
@@ -227,11 +227,6 @@ class CnnPolicy(object):
                 self.train_dropout_assign_ops = fast_dropout_assigned_ops
                 self.run_dropout_assign_ops = slow_dropout_assign_ops
                 self.h =  tf.concat([act_condit, act_invariant], axis=1)
-            # with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-            #     act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
-            #     self.train_dropout_assign_ops = fast_dropout_assigned_ops
-            #     self.run_dropout_assign_ops = slow_dropout_assign_ops
-            #     self.h =  tf.concat([act_condit, act_invariant], axis=1)
             
         else:
             with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
@@ -239,6 +234,7 @@ class CnnPolicy(object):
                 self.train_dropout_assign_ops = fast_dropout_assigned_ops
                 self.run_dropout_assign_ops = slow_dropout_assign_ops
                 self.h =  tf.concat([act_condit, act_invariant], axis=1)
+
         if Config.AGENT == 'ppg':
             self.X_pi, self.processed_x_pi = observation_input(ob_space, None)
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -247,6 +243,7 @@ class CnnPolicy(object):
                 act_one_hot = tf.reshape(tf.one_hot(self.A,ac_space.n), (-1,ac_space.n))
                 self.adv_pi = get_linear_layer(n_in=256+15,n_out=1)(tf.concat([self.h_pi,act_one_hot],axis=1))
                 self.v_pi = get_linear_layer(n_in=256,n_out=1)(self.h_pi)
+
         elif Config.AGENT == 'ppg_ssl':
             self.X_pi, self.processed_x_pi = observation_input(ob_space, None)
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -342,12 +339,13 @@ class CnnPolicy(object):
             """
             Clustering part
             """
-            obs_cluster = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+            obs_cluster = REP_PROC
 
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 # h_codes: n_batch x n_t x n_rkhs
-                act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
-                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
+                # act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
+                # import ipdb;ipdb.set_trace()
+                self.h_codes = tf.transpose(tf.reshape(self.h,[-1,Config.NUM_ENVS,256]),(1,0,2))
                 h_t = self.h_codes[:,:-1]
                 h_tp1 = self.h_codes[:,1:]
                 
@@ -448,12 +446,13 @@ class CnnPolicy(object):
             """
             if Config.CLUSTER_CONDIT_POLICY:
                 concat_code = tf.stop_gradient(tf.reshape(self.codes, [-1, Config.N_SKILLS]))
-                self.h = self.h[Config.NUM_ENVS:]
+                self.h_rl = self.h[Config.NUM_ENVS:]
                 # print(self.h)
                 # print(concat_code)
-                self.h= tf.concat([self.h, concat_code], axis=1)
+                self.h_rl= tf.concat([self.h_rl, concat_code], axis=1)
                 #h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
             else:
+                self.h_rl = self.h[Config.NUM_ENVS:]
                 concat_code = tf.zeros([1,Config.N_SKILLS])
                 
         if Config.AGENT == 'ppg':
@@ -470,6 +469,7 @@ class CnnPolicy(object):
 
                 # For Dropout: Always change layer, so slow layer is never used
                 self.run_dropout_assign_ops = []
+
         elif Config.AGENT == 'ppg_ssl':
             with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
                 self.pd_train = [self.pdtype.pdfromlatent(self.h_pi, init_scale=0.01)[0]]
@@ -484,26 +484,27 @@ class CnnPolicy(object):
 
                 # For Dropout: Always change layer, so slow layer is never used
                 self.run_dropout_assign_ops = []
+
         else:
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
                     self.pd_train = []
                     for i in range(Config.POLICY_NHEADS):
                         with tf.compat.v1.variable_scope("head_"+str(i), reuse=tf.compat.v1.AUTO_REUSE):
-                            self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
+                            self.pd_train.append(self.pdtype.pdfromlatent(self.h_rl if Config.AGENT == 'ppo_goal' else self.h, init_scale=0.01)[0])
                     with tf.compat.v1.variable_scope("head_i", reuse=tf.compat.v1.AUTO_REUSE):
-                        self.pd_train_i = self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]
+                        self.pd_train_i = self.pdtype.pdfromlatent(self.h_rl if Config.AGENT == 'ppo_goal' else self.h, init_scale=0.01)[0]
                 else:
                     with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
-                        self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
+                        self.pd_train = [self.pdtype.pdfromlatent(self.h_rl if Config.AGENT == 'ppo_goal' else self.h, init_scale=0.01)[0]]
                 
                 if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
                     # self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
-                    self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
+                    self.vf_train = [fc(self.h_rl if Config.AGENT == 'ppo_goal' else self.h, 'v_0', 1)[:, 0] ]
                 else:
-                    self.vf_train = [fc(self.h, 'v_0', 1)[:, 0] ]
+                    self.vf_train = [fc(self.h_rl if Config.AGENT == 'ppo_goal' else self.h, 'v_0', 1)[:, 0] ]
                 if Config.AGENT == 'ppo_rnd' or Config.AGENT == 'ppo_diayn' or Config.AGENT == 'ppo_goal':
-                    self.vf_i_train = fc(tf.stop_gradient(self.h), 'v_i', 1)[:, 0]
+                    self.vf_i_train = fc(tf.stop_gradient(self.h_rl if Config.AGENT == 'ppo_goal' else self.h), 'v_i', 1)[:, 0]
                     self.vf_i_run = self.vf_i_train
                 if  (Config.CUSTOM_REP_LOSS and Config.AGENT == 'ppo'):
                     self.vf_i_train = fc(self.h, 'v_i', 1)[:, 0]
@@ -535,9 +536,13 @@ class CnnPolicy(object):
             elif Config.AGENT == 'ppo_goal':
                 if Config.CLUSTER_CONDIT_POLICY:
                     a, v, v_i, neglogp, h, h_codes, ht, htp1, ccode = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.h, self.h_codes, h_t, h_tp1, concat_code], {REP_PROC: ob, Z: one_hot_skill})
+                    # a = a[Config.NUM_ENVS:]
+                    # v = v[Config.NUM_ENVS:]
                     return a, v, v_i, self.initial_state, neglogp,  h, h_codes, ht, htp1, ccode
                 else:
                     a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {REP_PROC: ob, Z: one_hot_skill})
+                    # a = a[Config.NUM_ENVS:]
+                    # v = v[Config.NUM_ENVS:]
                     return a, v, v_i, self.initial_state, neglogp
             elif Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS:
                 head_idx = 0
@@ -567,7 +572,9 @@ class CnnPolicy(object):
             if Config.AGENT == 'ppo_diayn':
                 return sess.run(self.vf_run, {X: ob, Z: one_hot_skill})
             elif Config.AGENT == 'ppo_goal':
-                return sess.run(self.vf_run, {REP_PROC: ob, Z: one_hot_skill})
+                v = sess.run(self.vf_run, {REP_PROC: ob, Z: one_hot_skill})[0]
+                # v = v[Config.NUM_ENVS:]
+                return v
             else:
                  return sess.run(self.vf_run, {self.STATE: ob, X:ob})
 

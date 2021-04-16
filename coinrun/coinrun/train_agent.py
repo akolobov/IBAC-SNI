@@ -67,7 +67,7 @@ from baselines.bench.monitor import ResultsWriter
 print('Imported baselines')
 from collections import deque
 import coinrun.main_utils as utils
-from coinrun import setup_utils, policies, wrappers
+from coinrun import setup_utils, wrappers
 from coinrun.config import Config
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Sequence, Tuple
@@ -333,21 +333,32 @@ def main():
     with tf.compat.v1.Session(config=config) as sess:
         
         
-        policy = policies.get_policy()
 
         #sess.run(tf.compat.v1.global_variables_initializer())
+        
         if Config.AGENT == 'ppo':
             from coinrun import ppo2 as agent
+            from coinrun import policies
         elif Config.AGENT == 'ppo_rnd':
             from coinrun import ppo2_rnd as agent
+            from coinrun import policies
         elif Config.AGENT == 'ppo_diayn':
             from coinrun import ppo2_diayn as agent
+            from coinrun import policies
         elif Config.AGENT == 'ppg':
             from coinrun import ppo2_ppg as agent
+            from coinrun import policies
         elif Config.AGENT == 'ppg_ssl':
             from coinrun import ppo2_ppg_ssl as agent
+            from coinrun import policies
         elif Config.AGENT == 'ppo_goal':
             from coinrun import ppo2_goal as agent
+            from coinrun import policies
+        elif Config.AGENT == 'ppo_goal_bogdan':
+            from coinrun import ppo2_goal_bogdan as agent
+            from coinrun import policies_bogdan as policies
+        policy = policies.get_policy()
+
         agent.learn(policy=policy,
                     env=venv,
                     eval_env=venv_eval,

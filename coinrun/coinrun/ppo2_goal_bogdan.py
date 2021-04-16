@@ -36,7 +36,7 @@ from tensorflow.python.ops.ragged.ragged_util import repeat
 
 from random import choice
 
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, calinski_harabasz_score
 
 
 # k: k parameter for K-nn
@@ -431,18 +431,14 @@ class Model(object):
 			# grab normalized advantage mean
 			adv_ratio = np.mean(advs_i / advs, axis=0, keepdims=True)
 
-			# flatten obs
-			original_obs = original_obs.reshape(-1,64,64,3)
-			
 			td_map = {train_model.X:obs, A:actions, ADV_1:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
 						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills,  STEP:step, train_model.REP_PROC:original_obs, train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
 						}
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
-				
+			
 			if train_target=='policy':
-				td_map[train_model.REP_PROC] = np.concatenate([obs[:Config.NUM_ENVS],obs],0)
 				return sess.run(
 						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, myow_loss, train_model.codes, _train],
 						td_map
@@ -551,45 +547,24 @@ class Runner(AbstractEnvRunner):
 		# the skill remains fixed for each minibatch 
 		mb_skill = np.asarray([one_hot_skill]*self.nsteps, dtype=np.int32)
 		# For n in range number of steps
-		for i in range(self.nsteps):
+		for _ in range(self.nsteps):
 			# Given observations, get action value and neglopacs
 			# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-			if i == 0:
-				ob_tm1 = np.expand_dims(self.obs, 0)
-			ob_t = np.expand_dims(self.obs, 0)
-			# concat o_t and o_t_m1 for joint step clustering on step function
-			joint_ob = np.concatenate([ob_tm1, ob_t], 0)
-			if Config.CLUSTER_CONDIT_POLICY:
-				actions, values, values_i, self.states, neglogpacs, h, h_codes, ht, htp1, ccode = self.model.step(joint_ob.reshape(-1, 64, 64, 3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
-			else:
-				actions, values, values_i, self.states, neglogpacs = self.model.step(joint_ob.reshape(-1,64,64,3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			actions, values, values_i, self.states, neglogpacs = self.model.step(self.obs,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
 			mb_values_i.append(values_i)
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
-
-			# offset past observation
-			ob_tm1 = ob_t.copy()
+			
 
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
 			# eval for zero shot generalization
-			if i == 0:
-				eval_ob_tm1 = np.expand_dims(self.eval_obs, 0)
-			eval_ob_t = np.expand_dims(self.eval_obs, 0)
-			# concat o_t and o_t_m1 for joint step clustering on step function
-			joint_ob_eval = np.concatenate([eval_ob_tm1, eval_ob_t], 0)
-			if Config.CLUSTER_CONDIT_POLICY:
-				eval_actions, eval_values, _, eval_states, eval_neglogpacs, h, h_codes, ht, htp1, ccode = self.model.step(joint_ob_eval.reshape(-1,64,64,3), update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
-			else:
-				eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(joint_ob_eval.reshape(-1,64,64,3), update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(self.eval_obs, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
-
-			# offset past observation for eval
-			eval_ob_tm1 = eval_ob_t.copy()
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
 				if maybeepinfo: epinfos.append(maybeepinfo)
@@ -612,12 +587,12 @@ class Runner(AbstractEnvRunner):
 		mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
 		mb_infos = np.asarray(mb_infos, dtype=np.float32)
 		mb_dones = np.asarray(mb_dones, dtype=np.bool)	
-		last_values = self.model.value(joint_ob.reshape(-1, 64, 64, 3), update_frac, one_hot_skill=one_hot_skill)
-		last_values_i = self.model.value_i(joint_ob.reshape(-1, 64, 64, 3), update_frac, one_hot_skill=one_hot_skill)
+		last_values = self.model.value(self.obs, update_frac, one_hot_skill=one_hot_skill)[0]
+		last_values_i = self.model.value_i(self.obs, update_frac, one_hot_skill=one_hot_skill)
 		# compute codes
 		
 		if intrinsic and Config.HARD_CODES:
-			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0).reshape(-1, 64, 64, 3),mb_actions)
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
 			mb_rewards_i = mb_codes.argmax(-1).transpose()
 			# for each observation, find the most likely code/cluster
 			# hard_codes = np.argmax(mb_codes.reshape(-1,Config.N_SKILLS), axis=1)
@@ -629,7 +604,7 @@ class Runner(AbstractEnvRunner):
 			# mb_rewards_i = np.reshape(code_rewards, (256, 32))
 
 		elif intrinsic:
-			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0).reshape(-1, 64, 64, 3),mb_actions)
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
 			sess = tf.compat.v1.get_default_session()
 			clusters = sess.run(self.model.train_model.protos).transpose(1,0)
 			nearest_Q_clusters = clusters[mb_codes.argmax(2).reshape(-1)]
@@ -652,7 +627,6 @@ class Runner(AbstractEnvRunner):
 		mb_returns = np.zeros_like(mb_rewards)
 		mb_advs = np.zeros_like(mb_rewards)
 		lastgaelam = 0
-		
 		for t in reversed(range(self.nsteps)):
 			if t == self.nsteps - 1:
 				nextnonterminal = 1.0 - self.dones
@@ -807,9 +781,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			# sample new skill/code for current episodes
 			if BOLZTMANN_PROTO_SKILL_SELECTION:
 				print('Empirical cluster return estimates:')
-				#
-				curr_z = np.random.choice([i for i in range(Config.N_SKILLS)],size=1,replace=False,p=np.exp(cluster_returns)/np.sum(np.exp(cluster_returns))).item()
-				# curr_z = cluster_returns.argmax()
+				print(cluster_returns)
+				# curr_z = np.random.choice([i for i in range(Config.N_SKILLS)],size=1,replace=False,p=np.exp(cluster_returns)/np.sum(np.exp(cluster_returns))).item()
+				curr_z = cluster_returns.argmax()
 			else:
 				curr_z = np.random.randint(0, high=Config.N_SKILLS)
 			z_iter = 0
@@ -842,8 +816,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		total_proto_ce_loss = 0
 		# create dummy array for intrinsic reward during clustering updates
 		returns_i = np.zeros_like(returns)
-		# obs = np.concatenate([obs[0].reshape(-1,Config.NUM_ENVS,64,64,3),obs],0)
-		# actions = np.concatenate([actions[0].reshape(-1,Config.NUM_ENVS),actions],0)
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -851,12 +823,12 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = start + nbatch_train
 				mbinds = inds[start:end]
-				slices = (arr for arr in (sf01(obs.swapaxes(0, 1)), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				v_cluster = values[inds_2d[:,0]][:N_BATCH_AUX]
-				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster, act_subsampled_cluster, r_cluster, curr_step, *slices, train_target='clustering')
+				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
 				if BOLZTMANN_PROTO_SKILL_SELECTION:
 					cluster_returns = np.zeros(Config.N_SKILLS)
 					cluster_idx = mb_Q.argmax(1)
@@ -871,11 +843,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
-				slices = (arr[mbinds] for arr in (sf01(obs.swapaxes(0, 1)), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
-				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster, act_subsampled_cluster, r_cluster, curr_step, *slices, train_target='myow')
+				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
 
 		# compute proper intrinsic reward before PPO updates
 		if Config.INTRINSIC:
@@ -894,11 +866,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				end = start + nbatch_train
 				mbinds = inds[start:end]
 				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
-				slices = (arr[mbinds] for arr in (sf01(obs.swapaxes(0, 1)), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
+				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
-				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster, act_subsampled_cluster, r_cluster, curr_step, *slices, train_target='policy')
+				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
 				total_adv_ratio += adv_ratio
 				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
 				mblossvals.append(res[:-1])
@@ -952,8 +924,10 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			mb_Q = mb_Q.reshape(-1,Config.N_SKILLS)
 			try:
 				sil_score = silhouette_score(mb_Q,mb_Q.argmax(1))
+                ch_score = calinski_harabasz_score(mb_Q,mb_Q.argmax(1))
 			except:
 				sil_score = 1
+                ch_score = 1
 
 			wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
 						"%s/avg_value"%(Config.ENVIRONMENT):avg_value,
@@ -963,6 +937,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 						"%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
 						"%s/cluster_loss"%(Config.ENVIRONMENT):cluster_loss_res,
 						"%s/silhouette_score"%(Config.ENVIRONMENT):sil_score,
+                        "%s/calinski_harabasz_score"%(Config.ENVIRONMENT):ch_score,
 						'%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
 						'%s/myow_loss'%(Config.ENVIRONMENT):myow_loss_res,
 						'%s/mean_adv_ratio'%(Config.ENVIRONMENT):mean_adv_ratio,
