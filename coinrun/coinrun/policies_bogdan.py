@@ -204,7 +204,7 @@ class CnnPolicy(object):
             REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
             Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
-            CLUSTER_DIMS = 256
+            CLUSTER_DIMS = 128
             HIDDEN_DIMS_SSL = 256
             self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(CLUSTER_DIMS, Config.N_SKILLS)), trainable=True, name='Prototypes')
             self.A = self.pdtype.sample_placeholder([None],name='A')
@@ -244,9 +244,8 @@ class CnnPolicy(object):
             
             # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
             h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
-            # if not Config.CLUSTER_CONDIT_POLICY:
-            #     act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
-            #     h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+            # act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+            # h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
             self.z_t = get_online_predictor(n_in=256*2,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
             
             self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
@@ -281,24 +280,25 @@ class CnnPolicy(object):
             """
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                 # h_codes: n_batch x n_t x n_rkhs
-                act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
-                h_codes_target =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
+                # act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
+                h_codes_target =  tf.transpose(tf.reshape(self.h,[-1,Config.NUM_ENVS,256]),(1,0,2))
                 h_t_target = h_codes_target[:,:-1]
                 h_tp1_target = h_codes_target[:,1:]
                 
                 # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
                 h_seq_target = tf.reshape( tf.concat([h_t_target,h_tp1_target],2), (-1,256*2))
                 # if not Config.CLUSTER_CONDIT_POLICY:
-                #     act_one_hot_target = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
-                #     h_seq_target = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq_target,1),1), act_one_hot_target]),1),1)
+                # act_one_hot_target = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+                # h_seq_target = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq_target,1),1), act_one_hot_target]),1),1)
             y_online = h_seq
             y_target = tf.stop_gradient(h_seq_target)
+            # y_reward = tf.reshape(self.R_cluster,(-1,1))
             
 
             # get K closest vectors by Sinkhorn scores
+            # dist = _compute_distance(y_reward,y_reward)
             dist = _compute_distance(y_online,y_online)
-            # dist = _compute_distance(y_online,y_online)
-            k_t = 3
+            k_t = 5
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
             
             # N_target = y_target
@@ -308,8 +308,8 @@ class CnnPolicy(object):
                 v_online = v_online_net(y_online)
                 r_online = r_online_net(v_online)
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                v_target_net = get_predictor(n_in=256*2,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred')
-                r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred')
+                v_target_net = get_predictor(n_in=256*2,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred_target')
+                r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred_target')
 
             self.myow_loss = 0.
             for k in range(k_t):

@@ -437,7 +437,7 @@ class Model(object):
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
-			
+				
 			if train_target=='policy':
 				return sess.run(
 						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, myow_loss, train_model.codes, _train],
@@ -761,7 +761,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			params = tf.compat.v1.trainable_variables()
 			source_params = [p for p in params if "online" in p.name]
 			target_params = [p for p in params if "target" in p.name]
-			soft_update(source_params, target_params, tau=0.97)
+			soft_update(source_params, target_params, tau=1.)
 
 
 		assert nbatch % nminibatches == 0
@@ -827,7 +827,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				v_cluster = values[inds_2d[:,0]][:N_BATCH_AUX]
 				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
@@ -848,7 +848,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
+				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
 				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
 
 		# compute proper intrinsic reward before PPO updates

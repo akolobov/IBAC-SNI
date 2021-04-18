@@ -201,10 +201,10 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, None)
             TRAIN_NUM_STEPS = Config.NUM_STEPS//16
-            _, REP_PROC = observation_input(ob_space, None) #tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, 64, 64, 3), name='Rep_Proc')
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
-            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.N_SKILLS), name='Curr_skill')
-            CLUSTER_DIMS = 256
+            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
+            CLUSTER_DIMS = 128
             HIDDEN_DIMS_SSL = 256
             self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(CLUSTER_DIMS, Config.N_SKILLS)), trainable=True, name='Prototypes')
             self.A = self.pdtype.sample_placeholder([None],name='A')
@@ -221,11 +221,12 @@ class CnnPolicy(object):
         if Config.AGENT == 'ppo_goal':
             # fetch ob_t from joint observations for step
             # X = REP_PROC[0, :, :, :, :]
-            X = REP_PROC #tf.reshape(REP_PROC, [-1, 64, 64, 3])
-            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            X = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
                 self.train_dropout_assign_ops = fast_dropout_assigned_ops
                 self.run_dropout_assign_ops = slow_dropout_assign_ops
+            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 self.h =  tf.concat([act_condit, act_invariant], axis=1)
             
         else:
@@ -343,9 +344,8 @@ class CnnPolicy(object):
 
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 # h_codes: n_batch x n_t x n_rkhs
-                # act_condit, act_invariant, _, _ = choose_cnn(obs_cluster)
-                # import ipdb;ipdb.set_trace()
-                self.h_codes = tf.transpose(tf.reshape(self.h,[-1,Config.NUM_ENVS,256]),(1,0,2))
+                act_condit, act_invariant, _, _ = choose_cnn(X)
+                self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
                 h_t = self.h_codes[:,:-1]
                 h_tp1 = self.h_codes[:,1:]
                 
@@ -388,8 +388,8 @@ class CnnPolicy(object):
                 """
                 with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                     # h_codes: n_batch x n_t x n_rkhs
-                    act_condit_target, act_invariant_target, _, _ = choose_cnn(obs_cluster)
-                    h_codes_target =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
+                    # act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
+                    h_codes_target =  tf.transpose(tf.reshape(self.h,[-1,Config.NUM_ENVS,256]),(1,0,2))
                     h_t_target = h_codes_target[:,:-1]
                     h_tp1_target = h_codes_target[:,1:]
                     
@@ -405,7 +405,7 @@ class CnnPolicy(object):
                 # get K closest vectors by Sinkhorn scores
                 dist = _compute_distance(y_online,y_online)
                 # dist = _compute_distance(y_online,y_online)
-                k_t = 3
+                k_t = 5
                 vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
                 
                 # N_target = y_target
@@ -415,8 +415,8 @@ class CnnPolicy(object):
                     v_online = v_online_net(y_online)
                     r_online = r_online_net(v_online)
                 with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-                    v_target_net = get_predictor(n_in=256*2,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred')
-                    r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred')
+                    v_target_net = get_predictor(n_in=256*2,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred_target')
+                    r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred_target')
 
                 self.myow_loss = 0.
                 for k in range(k_t):
