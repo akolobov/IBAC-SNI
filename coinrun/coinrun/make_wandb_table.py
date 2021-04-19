@@ -143,9 +143,12 @@ for metric in metrics:
             max_y = max(max_y,(mu).max())
             min_y = min(min_y,(mu).min())
 
-            # find largest reward in curve in last 10 timesteps
-            start_idx = len(mu)-10
-            best_idx = mu[start_idx:].argmax()+start_idx
+            # find largest reward in curve in interval [X_LEFT,X_RIGHT]
+            X_LEFT = 0
+            X_RIGHT = 8e6
+            start_idx = np.max(np.where(x<8e6)[0])
+            # start_idx = len(mu)-10
+            best_idx = mu[:start_idx].argmax()#+start_idx
 
             if metric == 'eprew_eval':
                 row_str_eval += '& %.1f$\pm$%.1f ' % (mu[best_idx],sigma[best_idx])
@@ -217,5 +220,5 @@ table_train += r"""
 \end{table}%
 """
 print(table_eval)
-print(table_train)
+# print(table_train)
 import ipdb;ipdb.set_trace()

@@ -451,8 +451,8 @@ class CnnPolicy(object):
                 self.h = self.h[Config.NUM_ENVS:]
                 # print(self.h)
                 # print(concat_code)
-                self.h= tf.concat([self.h, concat_code], axis=1)
-                #h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+                # self.h = tf.concat([self.h, concat_code], axis=1)
+                self.h = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(self.h,1),1), concat_code]),1),1)
             else:
                 concat_code = tf.zeros([1,Config.N_SKILLS])
                 

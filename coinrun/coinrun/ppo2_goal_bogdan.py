@@ -361,13 +361,8 @@ class Model(object):
 		assert len(info_loss) == 1
 		info_loss = info_loss[0]
 
-		# p_t = tf.nn.log_softmax(tf.linalg.matmul(U_T, train_model.protos) / 0.1, axis=1)
-		# curr_codes = sinkhorn(scores=tf.linalg.matmul(Z_T_1, tf.linalg.normalize(train_model.protos, ord='euclidean')[0]))
-		# rep_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(curr_codes) * p_t, axis=1))
 		p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / 0.1, axis=1)
-		# curr_codes = sinkhorn(scores=tf.linalg.matmul(tf.linalg.normalize(train_model.z_t_1, axis=1, ord='euclidean')[0], tf.linalg.normalize(train_model.protos, ord='euclidean')[0]))
 		proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
-		cluster_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum( train_model.codes * p_t, axis=1))
 
 		vpred_loss = train_model.cluster_value_mse_loss
 		if Config.MYOW:
@@ -382,7 +377,7 @@ class Model(object):
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
-			trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=7e-3, epsilon=1e-5)
+			trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
 			trainer_myow = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
 		else:
 			trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
@@ -442,17 +437,17 @@ class Model(object):
 				
 			if train_target=='policy':
 				return sess.run(
-						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, myow_loss, train_model.codes, _train],
+						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, proto_loss, myow_loss, train_model.codes, _train],
 						td_map
 					)[:-1], adv_ratio
 			elif train_target=='clustering':
 				return sess.run(
-						[cluster_loss, myow_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, _train_aux],
+						[proto_loss, myow_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, _train_aux],
 						td_map
 					)[:-1]
 			elif train_target=='myow':
 				return sess.run(
-						[cluster_loss, myow_loss, train_model.codes, proto_loss, _train_myow],
+						[proto_loss, myow_loss, train_model.codes, proto_loss, _train_myow],
 						td_map
 					)[:-1]
 			
@@ -565,6 +560,7 @@ class Runner(AbstractEnvRunner):
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
+			
 			# eval for zero shot generalization
 			eval_obs_exp = np.expand_dims(self.eval_obs, 0)
 			eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(eval_obs_exp, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
@@ -642,6 +638,7 @@ class Runner(AbstractEnvRunner):
 			mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
 			
 		mb_returns = mb_advs + mb_values
+		
 		return (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, *map(sf01, ( mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1, mb_codes)),
 			states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, mb_rewards_i, last_values_i)
 
@@ -820,6 +817,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		total_proto_ce_loss = 0
 		# create dummy array for intrinsic reward during clustering updates
 		returns_i = np.zeros_like(returns)
+
+		# split representation and rl levels
+		levels = np.random.permutation(np.unique(infos[:,-1]))
+		train_split = int( 0.75 * len(levels))
+		representation_levels = levels[:train_split]
+		representation_idx = np.isin(infos[:,-1],representation_levels)*1
+		test_idx = 1-1*np.isin(infos[:,-1],representation_levels)
+		import ipdb;ipdb.set_trace()
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -839,6 +844,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 					for i in range(Config.N_SKILLS):
 						cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
 				total_proto_ce_loss += proto_ce_loss
+
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -849,7 +855,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
 				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
 
@@ -872,7 +878,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
 				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
 				total_adv_ratio += adv_ratio

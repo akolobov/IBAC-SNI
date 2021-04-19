@@ -219,11 +219,7 @@ class CnnPolicy(object):
             self.A_cluster = self.pdtype.sample_placeholder([None, Config.NUM_ENVS], name='A_cluster')
             
         X = tf.reshape(REP_PROC, [-1, 64, 64, 3])
-        # with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-        #     act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
-        #     self.train_dropout_assign_ops = fast_dropout_assigned_ops
-        #     self.run_dropout_assign_ops = slow_dropout_assign_ops
-        #     self.h =  tf.concat([act_condit, act_invariant], axis=1)
+        
         with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
             self.train_dropout_assign_ops = fast_dropout_assigned_ops
@@ -244,8 +240,8 @@ class CnnPolicy(object):
             
             # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
             h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
-            # act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
-            # h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[128,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+            act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+            h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[128,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
             self.z_t = get_online_predictor(n_in=256*2,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
             
             self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
@@ -289,7 +285,6 @@ class CnnPolicy(object):
                 
                 # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
                 h_seq_target = tf.reshape( tf.concat([h_t_target,h_tp1_target],2), (-1,256*2))
-                # if not Config.CLUSTER_CONDIT_POLICY:
                 # act_one_hot_target = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
                 # h_seq_target = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq_target,1),1), act_one_hot_target]),1),1)
             y_online = h_seq
