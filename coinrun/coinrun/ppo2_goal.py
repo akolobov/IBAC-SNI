@@ -391,9 +391,12 @@ class Model(object):
 		if max_grad_norm is not None:
 			grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
 		grads_and_var = list(zip(grads, var))
+		grad_free_vars = {}
 		tot_norm = tf.zeros((1,))
 		for g,v in grads_and_var:
-			tot_norm += tf.norm(g)
+			curr_norm = tf.norm(g)
+			tot_norm += curr_norm
+			grad_free_vars[v.name] = curr_norm
 		tot_norm = tf.reshape(tot_norm, [])
 		_train = trainer.apply_gradients(grads_and_var)
 
@@ -401,9 +404,15 @@ class Model(object):
 
 		grads_and_var_aux = trainer_aux.compute_gradients(aux_loss, params)
 		grads_aux, var_aux = zip(*grads_and_var_aux)
+		
 		if max_grad_norm is not None:
 			grads_aux, _grad_norm_aux = tf.clip_by_global_norm(grads_aux, max_grad_norm)
 		grads_and_var_aux = list(zip(grads_aux, var_aux))
+
+		# track params which are not updated
+		grad_free_vars_aux = {}
+		for g,v in grads_and_var_aux:
+			grad_free_vars_aux[v.name] = tf.norm(g)
 		_train_aux = trainer_aux.apply_gradients(grads_and_var_aux)
 
 
@@ -413,6 +422,10 @@ class Model(object):
 		if max_grad_norm is not None:
 			grads_myow, _grad_norm_myow = tf.clip_by_global_norm(grads_myow, max_grad_norm)
 		grads_and_var_myow = list(zip(grads_myow, var_myow))
+
+		grad_free_vars_myow = {}
+		for g,v in grads_and_var_aux:
+			grad_free_vars_myow[v.name] = tf.norm(g)
 		_train_myow = trainer_myow.apply_gradients(grads_and_var_myow)
 
 		
@@ -432,30 +445,27 @@ class Model(object):
 			adv_ratio = np.mean(advs_i / advs, axis=0, keepdims=True)
 
 			# flatten obs
-			#original_obs = original_obs.reshape(-1,64,64,3)
 			
-			#print('original_obs', original_obs.shape)
 			td_map = {train_model.X:obs, A:actions, ADV_1:advs, R:returns, LR:lr, CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values, train_model.STATE:obs, 
-						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills,  STEP:step, train_model.REP_PROC:original_obs, train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
+						ADV_2:advs_i, OLDVPRED_i:values_i, R_i:returns_i, train_model.Z: skills,  STEP:step, train_model.REP_PROC:original_obs.reshape(-1, 64, 64, 3), train_model.R_cluster:r_cluster, train_model.A_cluster:act_cluster
 						}
 			if states is not None:
 				td_map[train_model.S] = states
 				td_map[train_model.M] = masks
-				
+			
 			if train_target=='policy':
-				#td_map[train_model.REP_PROC] = np.concatenate([obs[:Config.NUM_ENVS],obs],0)
 				return sess.run(
-						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, myow_loss, train_model.codes, _train],
+						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, myow_loss, train_model.codes, grad_free_vars, _train],
 						td_map
 					)[:-1], adv_ratio
 			elif train_target=='clustering':
 				return sess.run(
-						[cluster_loss, myow_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, _train_aux],
+						[cluster_loss, myow_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, grad_free_vars_aux, _train_aux],
 						td_map
 					)[:-1]
 			elif train_target=='myow':
 				return sess.run(
-						[cluster_loss, myow_loss, train_model.codes, proto_loss, _train_myow],
+						[cluster_loss, myow_loss, train_model.codes, proto_loss, grad_free_vars_myow, _train_myow],
 						td_map
 					)[:-1]
 			
@@ -552,26 +562,45 @@ class Runner(AbstractEnvRunner):
 		# the skill remains fixed for each minibatch 
 		mb_skill = np.asarray([one_hot_skill]*self.nsteps, dtype=np.int32)
 		# For n in range number of steps
-		for _ in range(self.nsteps):
+		for i in range(self.nsteps):
 			# Given observations, get action value and neglopacs
 			# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-			obs_exp = np.expand_dims(self.obs, 0)
-			actions, values, values_i, self.states, neglogpacs = self.model.step(obs_exp,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			if i == 0:
+				ob_tm1 = np.expand_dims(self.obs, 0)
+			ob_t = np.expand_dims(self.obs, 0)
+			# concat o_t and o_t_m1 for joint step clustering on step function
+			joint_ob = np.concatenate([ob_tm1, ob_t], 0)
+			if Config.CLUSTER_CONDIT_POLICY:
+				actions, values, values_i, self.states, neglogpacs, h, h_codes, ht, htp1, ccode = self.model.step(joint_ob.reshape(-1, 64, 64, 3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			else:
+				actions, values, values_i, self.states, neglogpacs = self.model.step(joint_ob.reshape(-1,64,64,3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
 			mb_values.append(values)
 			mb_values_i.append(values_i)
 			mb_neglogpacs.append(neglogpacs)
 			mb_dones.append(self.dones)
-			
+
+			# offset past observation
+			ob_tm1 = ob_t.copy()
 
 			# Take actions in env and look the results
 			# Infos contains a ton of useful informations
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
 			# eval for zero shot generalization
-			eval_obs_exp = np.expand_dims(self.eval_obs, 0)
-			eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(eval_obs_exp, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			if i == 0:
+				eval_ob_tm1 = np.expand_dims(self.eval_obs, 0)
+			eval_ob_t = np.expand_dims(self.eval_obs, 0)
+			# concat o_t and o_t_m1 for joint step clustering on step function
+			joint_ob_eval = np.concatenate([eval_ob_tm1, eval_ob_t], 0)
+			if Config.CLUSTER_CONDIT_POLICY:
+				eval_actions, eval_values, _, eval_states, eval_neglogpacs, h, h_codes, ht, htp1, ccode = self.model.step(joint_ob_eval.reshape(-1,64,64,3), update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+			else:
+				eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(joint_ob_eval.reshape(-1,64,64,3), update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
+
+			# offset past observation for eval
+			eval_ob_tm1 = eval_ob_t.copy()
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
 				if maybeepinfo: epinfos.append(maybeepinfo)
@@ -594,12 +623,12 @@ class Runner(AbstractEnvRunner):
 		mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
 		mb_infos = np.asarray(mb_infos, dtype=np.float32)
 		mb_dones = np.asarray(mb_dones, dtype=np.bool)	
-		last_values = self.model.value(obs_exp, update_frac, one_hot_skill=one_hot_skill)[0]
-		last_values_i = self.model.value_i(obs_exp, update_frac, one_hot_skill=one_hot_skill)
+		last_values = self.model.value(joint_ob.reshape(-1, 64, 64, 3), update_frac, one_hot_skill=one_hot_skill)[0]
+		last_values_i = self.model.value_i(joint_ob.reshape(-1, 64, 64, 3), update_frac, one_hot_skill=one_hot_skill)
 		# compute codes
 		
 		if intrinsic and Config.HARD_CODES:
-			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0).reshape(-1, 64, 64, 3),mb_actions)
 			mb_rewards_i = mb_codes.argmax(-1).transpose()
 			# for each observation, find the most likely code/cluster
 			# hard_codes = np.argmax(mb_codes.reshape(-1,Config.N_SKILLS), axis=1)
@@ -611,7 +640,7 @@ class Runner(AbstractEnvRunner):
 			# mb_rewards_i = np.reshape(code_rewards, (256, 32))
 
 		elif intrinsic:
-			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0),mb_actions)
+			mb_codes, mb_u_t, mb_z_t_1, mb_h = self.model.compute_codes(np.concatenate([np.expand_dims(mb_obs[0],0),mb_obs],0).reshape(-1, 64, 64, 3),mb_actions)
 			sess = tf.compat.v1.get_default_session()
 			clusters = sess.run(self.model.train_model.protos).transpose(1,0)
 			nearest_Q_clusters = clusters[mb_codes.argmax(2).reshape(-1)]
@@ -634,7 +663,6 @@ class Runner(AbstractEnvRunner):
 		mb_returns = np.zeros_like(mb_rewards)
 		mb_advs = np.zeros_like(mb_rewards)
 		lastgaelam = 0
-		
 		for t in reversed(range(self.nsteps)):
 			if t == self.nsteps - 1:
 				nextnonterminal = 1.0 - self.dones
@@ -824,8 +852,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		total_proto_ce_loss = 0
 		# create dummy array for intrinsic reward during clustering updates
 		returns_i = np.zeros_like(returns)
-		# obs = np.concatenate([obs[0].reshape(-1,Config.NUM_ENVS,64,64,3),obs],0)
-		# actions = np.concatenate([actions[0].reshape(-1,Config.NUM_ENVS),actions],0)
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -835,16 +861,20 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
+				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
 				v_cluster = values[inds_2d[:,0]][:N_BATCH_AUX]
-				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
+				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss, r_i_scale, grad_free_vars_aux  = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
 				if BOLZTMANN_PROTO_SKILL_SELECTION:
 					cluster_returns = np.zeros(Config.N_SKILLS)
 					cluster_idx = mb_Q.argmax(1)
 					for i in range(Config.N_SKILLS):
 						cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
 				total_proto_ce_loss += proto_ce_loss
+		# print('AUX')
+		# for v in grad_free_vars_aux:
+		# 	print(v, grad_free_vars_aux[v])
+
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -856,9 +886,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
 				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
 				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
-				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
-
+				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
+				_, myow_loss_res, mb_Q, proto_ce_loss, grad_free_vars_myow = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
+		# print('MYOW')
+		# for v in grad_free_vars_myow:
+		# 	print(v, grad_free_vars_myow[v])
 		# compute proper intrinsic reward before PPO updates
 		if Config.INTRINSIC:
 			# compute log CE reward scaling
@@ -882,9 +914,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
 				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
 				total_adv_ratio += adv_ratio
-				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
-				mblossvals.append(res[:-1])
-		
+				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q, grad_free_vars = res[-5:]
+				mblossvals.append(res[:-2])
+		# print('PPO')
+		# for v in grad_free_vars:
+		# 	print(v, grad_free_vars[v])
 		# mean normalized advantage over PPO updates
 		mean_adv_ratio = total_adv_ratio / (nminibatches * E_ppo)
 		# update the dropout mask

@@ -245,7 +245,7 @@ class CnnPolicy(object):
             # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
             h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
             # act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
-            # h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+            # h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[128,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
             self.z_t = get_online_predictor(n_in=256*2,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
             
             self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
@@ -259,6 +259,8 @@ class CnnPolicy(object):
         if Config.MYOW:
             """
             Compute average cluster reward 1/N_i \sum_{C_i} V^pi(s_j)
+
+            TODO: mine nearby representations of [st,stp1] with [st,at,stp1]? these two should be close if transitions are deterministic
             """
             cluster_idx = tf.argmax(scores,1)  
             if False:
@@ -278,10 +280,10 @@ class CnnPolicy(object):
             """
             MYOW where k-NN neighbors are replaced by Sinkhorn clusters
             """
-            with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+            with tf.compat.v1.variable_scope("random", reuse=tf.compat.v1.AUTO_REUSE):
                 # h_codes: n_batch x n_t x n_rkhs
-                # act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
-                h_codes_target =  tf.transpose(tf.reshape(self.h,[-1,Config.NUM_ENVS,256]),(1,0,2))
+                act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
+                h_codes_target =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
                 h_t_target = h_codes_target[:,:-1]
                 h_tp1_target = h_codes_target[:,1:]
                 
@@ -297,8 +299,8 @@ class CnnPolicy(object):
 
             # get K closest vectors by Sinkhorn scores
             # dist = _compute_distance(y_reward,y_reward)
-            dist = _compute_distance(y_online,y_online)
-            k_t = 5
+            dist = _compute_distance(y_online,y_target)
+            k_t = 3
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
             
             # N_target = y_target
@@ -309,16 +311,16 @@ class CnnPolicy(object):
                 r_online = r_online_net(v_online)
             with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
                 v_target_net = get_predictor(n_in=256*2,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred_target')
-                r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred_target')
+                r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred')
 
             self.myow_loss = 0.
             for k in range(k_t):
-                indx2 = indx[:,k+1]
+                indx2 = indx[:,k]
                 N_target = tf.gather(y_target, indx2)
                 v_target = v_target_net(N_target)
                 r_target = r_target_net(v_target)
 
-                self.myow_loss += ( tf.reduce_mean(cos_loss(r_online, v_target)) + tf.reduce_mean(cos_loss(r_target, v_online)) ) / k_t
+                self.myow_loss += tf.reduce_mean(cos_loss(r_online, v_target)) #+ tf.reduce_mean(cos_loss(r_target, v_online))
 
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
                 phi_s = get_online_predictor(n_in=256,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(tf.reshape(h_tp1,(-1,256)))

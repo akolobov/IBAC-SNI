@@ -376,12 +376,14 @@ class Model(object):
 			myow_loss = tf.reduce_mean(tf.zeros(1))
 
 		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
-		aux_loss =  proto_loss + vf_loss_i*vf_coef
+		aux_loss =  proto_loss #+ vf_loss_i*vf_coef 
+
+		# joint sinkhorn+myow works bad
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
-			trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
-			trainer_myow = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=1e-3, epsilon=1e-5)
+			trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=7e-3, epsilon=1e-5)
+			trainer_myow = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
 		else:
 			trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
 		
