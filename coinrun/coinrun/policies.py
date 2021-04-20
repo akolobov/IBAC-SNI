@@ -277,21 +277,21 @@ class CnnPolicy(object):
 			resized_x = tf.image.resize(processed_x, [84, 84])
 			with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
 				# resize and randomly crop observations. 
-				x_q = tf.image.random_crop(resized_x, [64, 64])
+				x_q = tf.image.random_crop(resized_x, [-1, 64, 64, 3])
 				z_q_1, z_q_2, _, _ = choose_cnn(x_q)
 				z_q = tf.concat([z_q_1, z_q_2], axis=1)
 
 			with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
 				# resize and produce different randomly crop observations. 
-				x_k = tf.image.random_crop(resized_x, [64, 64])
+				x_k = tf.image.random_crop(resized_x, [-1, 64, 64, 3])
 				z_k_1, z_k_2, _, _ = choose_cnn(x_k)
 				z_k = tf.stop_gradient(tf.concat([z_k_1, z_k_2], axis=1))
 			
-			proj_k = tf.linalg.matmul(Curl_W, tf.transpose(z_k))
-			logits = tf.linalg.matmul(z_q, matmul)
-			logits = logits - tf.reduce_max(logits, axis=1)
-			labels = tf.range(logits.shape[0])
-			self.curl_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels, logits)
+			proj_k = tf.linalg.matmul(tf.transpose(z_k), Curl_W)
+			logits = tf.linalg.matmul(z_q, proj_k)
+			curl_logits = logits - tf.reduce_max(logits, axis=1)
+			curl_labels = tf.range(tf.shape(logits)[0])
+			self.curl_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=curl_labels, logits=curl_logits)
 		elif Config.AGENT == 'ppg_ssl':
 			"""
 			MYOW part

@@ -811,7 +811,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		mean_cust_loss = 0
 		
 		E_ppo = 1 #noptepochs
-		E_clustering = Config.GOAL_EPOCHS
+		E_clustering = 1 #Config.GOAL_EPOCHS
 		
 		N_BATCH_AUX = 32
 		total_proto_ce_loss = 0

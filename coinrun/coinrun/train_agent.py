@@ -13,6 +13,9 @@ python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --
 DIAYN:
 python3 -m coinrun.train_agent --env coinrun --run-id diayn --num-levels 0 --short --agent ppo_diayn -skilleps 4 -n_skills 5
 
+CURL:
+python3 -m coinrun.train_agent --env coinrun --run-id curl --num-levels 0 --short --agent ppo_curl
+
 Goal conditioned PPO :
 python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50
 (with hard codes)
