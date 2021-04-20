@@ -820,6 +820,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 
 		# split representation and rl levels
 		levels = np.random.permutation(np.unique(infos[:,:,-1]))
+		print('Found %d levels in batch'%len(levels))
 		train_split = int( 0.2 * len(levels))
 		# train_split = int( 1 * len(levels))
 		representation_levels = levels[:train_split]
