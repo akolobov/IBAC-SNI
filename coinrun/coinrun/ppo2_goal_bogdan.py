@@ -436,13 +436,14 @@ class Model(object):
 				td_map[train_model.M] = masks
 				
 			if train_target=='policy':
+				# import ipdb;ipdb.set_trace()
 				return sess.run(
-						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, proto_loss, myow_loss, train_model.codes, _train],
+						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, proto_loss, train_model.codes, _train],
 						td_map
 					)[:-1], adv_ratio
 			elif train_target=='clustering':
 				return sess.run(
-						[proto_loss, myow_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, _train_aux],
+						[proto_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, _train_aux],
 						td_map
 					)[:-1]
 			elif train_target=='myow':
@@ -547,7 +548,7 @@ class Runner(AbstractEnvRunner):
 		for _ in range(self.nsteps):
 			# Given observations, get action value and neglopacs
 			# We already have self.obs because Runner superclass run self.obs[:] = env.reset() on init
-			obs_exp = np.expand_dims(self.obs, 0)
+			obs_exp = self.obs #np.expand_dims(self.obs, 0)
 			actions, values, values_i, self.states, neglogpacs = self.model.step(obs_exp,  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
 			mb_actions.append(actions)
@@ -562,7 +563,7 @@ class Runner(AbstractEnvRunner):
 			self.obs[:], rewards, self.dones, self.infos = self.env.step(actions)
 			
 			# eval for zero shot generalization
-			eval_obs_exp = np.expand_dims(self.eval_obs, 0)
+			eval_obs_exp = self.eval_obs #np.expand_dims(self.eval_obs, 0)
 			eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(eval_obs_exp, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
 			for info in self.infos:
@@ -639,8 +640,8 @@ class Runner(AbstractEnvRunner):
 			
 		mb_returns = mb_advs + mb_values
 		
-		return (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, *map(sf01, ( mb_values_i, mb_skill, mb_neglogpacs, mb_infos, mb_u_t, mb_z_t_1, mb_codes)),
-			states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, mb_rewards_i, last_values_i)
+		return (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_values_i, mb_skill, mb_neglogpacs, *map(sf01, (  mb_u_t, mb_z_t_1, mb_codes)),
+			mb_infos, states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, mb_rewards_i, last_values_i)
 
 	def compute_intrinsic_returns(self, mb_rewards_i, mb_values_i, last_values_i, mb_dones):
 		mb_returns_i = np.zeros_like(mb_rewards_i)
@@ -774,7 +775,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		run_tstart = time.time()
 
 		packed = runner.run(update_frac=update/nupdates, z=curr_z, pretrain=PRETRAIN, intrinsic=Config.INTRINSIC)
-		obs, returns, masks, actions, values, values_i, skill, neglogpacs, infos, u_t, z_t_1, mb_Q, states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, rewards_i, last_values_i, = packed
+		obs, returns, masks, actions, values, values_i, skill, neglogpacs, u_t, z_t_1, mb_Q, infos, states_nce, anchors_nce, labels_nce, epinfos, eval_epinfos, rewards_i, last_values_i, = packed
 
 		if z_iter < Config.SKILL_EPOCHS:
 			z_iter += 1
@@ -789,7 +790,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				curr_z = np.random.randint(0, high=Config.N_SKILLS)
 			z_iter = 0
 		
-		skill = np.reshape(skill, (-1, Config.N_SKILLS))
+		# skill = np.reshape(skill, (-1, Config.N_SKILLS))
 		# reshape our augmented state vectors to match first dim of observation array
 		# (mb_size*num_envs, 64*64*RGB)
 		# (mb_size*num_envs, num_actions)
@@ -808,10 +809,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		train_tstart = time.time()
 
 		mean_cust_loss = 0
-		inds = np.arange(nbatch)
+		
 		E_ppo = 1 #noptepochs
 		E_clustering = Config.GOAL_EPOCHS
-		mbinds = inds[0:nbatch_train]
 		
 		N_BATCH_AUX = 32
 		total_proto_ce_loss = 0
@@ -819,44 +819,61 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		returns_i = np.zeros_like(returns)
 
 		# split representation and rl levels
-		levels = np.random.permutation(np.unique(infos[:,-1]))
-		train_split = int( 0.75 * len(levels))
+		levels = np.random.permutation(np.unique(infos[:,:,-1]))
+		train_split = int( 0.2 * len(levels))
+		# train_split = int( 1 * len(levels))
 		representation_levels = levels[:train_split]
-		representation_idx = np.isin(infos[:,-1],representation_levels)*1
-		test_idx = 1-1*np.isin(infos[:,-1],representation_levels)
-		import ipdb;ipdb.set_trace()
+		representation_idx = np.where(np.isin(infos[0,:,-1],representation_levels)*1)[0]
+		# rl_idx = representation_idx
+		rl_idx = np.where(1-1*np.isin(infos[0,:,-1],representation_levels))[0]
+
+		rep_obs = obs[:,representation_idx]
+		rl_obs = obs[:,rl_idx]
+		rep_set_len = rep_obs.shape[0]*rep_obs.shape[1]
+		rl_set_len = rl_obs.shape[0]*rl_obs.shape[1]
+
+		rep_inds = np.arange(rep_set_len)
+		rl_inds = np.arange(rl_set_len)
+		# import ipdb;ipdb.set_trace()
+		
+		# mbinds = inds[0:min(nbatch_train,len(inds))]
+		print('Clustering phase')
 		for _ in range(E_clustering):
-			np.random.shuffle(inds)
-			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
-			for start in range(0, nbatch, nbatch_train):
+			np.random.shuffle(rep_inds)
+			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+			for start in range(0, rep_set_len, nbatch_train):
 				sess.run([model.train_model.train_dropout_assign_ops])
-				end = start + nbatch_train
-				mbinds = inds[start:end]
-				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
-				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX]#.reshape(-1)
-				v_cluster = values[inds_2d[:,0]][:N_BATCH_AUX]
-				cluster_loss_res, myow_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
+				end = min(start + nbatch_train, rep_set_len)
+				mbinds = rep_inds[start:end]
+				slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
+				# import ipdb;ipdb.set_trace()
+				obs_subsampled_cluster = sf01(rep_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
+				act_subsampled_cluster = actions[:,representation_idx].reshape(-1)[mbinds]
+				r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
+				v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
+				
+				cluster_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
 				if BOLZTMANN_PROTO_SKILL_SELECTION:
 					cluster_returns = np.zeros(Config.N_SKILLS)
 					cluster_idx = mb_Q.argmax(1)
 					for i in range(Config.N_SKILLS):
 						cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
 				total_proto_ce_loss += proto_ce_loss
-
+		print('MYOW phase')
 		for _ in range(E_clustering):
-			np.random.shuffle(inds)
-			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
-			for start in range(0, nbatch, nbatch_train):
+			np.random.shuffle(rep_inds)
+			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+			for start in range(0, rep_set_len, nbatch_train):
 				sess.run([model.train_model.train_dropout_assign_ops])
-				end = start + nbatch_train
-				mbinds = inds[start:end]
-				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
-				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
-				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
+				end = min(start + nbatch_train, rep_set_len)
+				mbinds = rep_inds[start:end]
+				slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
+				# import ipdb;ipdb.set_trace()
+				obs_subsampled_cluster = sf01(rep_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
+				act_subsampled_cluster = actions[:,representation_idx].reshape(-1)[mbinds]
+				r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
+				v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
+
 				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
 
 		# compute proper intrinsic reward before PPO updates
@@ -868,21 +885,24 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			returns_i = np.zeros_like(returns)
 		
 		total_adv_ratio = 0
+
+		print('RL phase')
 		for _ in range(E_ppo):
-			np.random.shuffle(inds)
-			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
-			for start in range(0, nbatch, nbatch_train):
+			np.random.shuffle(rl_inds)
+			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+			for start in range(0, rl_set_len, nbatch_train):
 				sess.run([model.train_model.train_dropout_assign_ops])
-				end = start + nbatch_train
-				mbinds = inds[start:end]
-				# inds_2d = np.unravel_index(mbinds,obs.shape[:2])
-				slices = (arr[mbinds] for arr in (sf01(obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
-				obs_subsampled_cluster = obs[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1,64,64,3)
-				act_subsampled_cluster = actions[inds_2d[:,0]][:N_BATCH_AUX-1]#.reshape(-1)
-				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
+				end = min(start + nbatch_train, rl_set_len)
+				mbinds = rl_inds[start:end]
+				slices = (arr[mbinds] for arr in (sf01(rl_obs), sf01(returns[:,rl_idx]), sf01(returns_i[:,rl_idx]), sf01(masks[:,rl_idx]), sf01(actions[:,rl_idx]), sf01(values[:,rl_idx]), sf01(values_i[:,rl_idx]), sf01(skill[:,rl_idx]), sf01(neglogpacs[:,rl_idx])))
+				# import ipdb;ipdb.set_trace()
+				obs_subsampled_cluster = sf01(rl_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
+				act_subsampled_cluster = actions[:,rl_idx].reshape(-1)[mbinds]
+				r_cluster = returns[:,rl_idx].reshape(-1)[mbinds]
+				v_cluster = values[:,rl_idx].reshape(-1)[mbinds]
 				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
 				total_adv_ratio += adv_ratio
-				value_i_loss, cluster_loss_res, myow_loss_res, mb_Q = res[-4:]
+				value_i_loss, cluster_loss_res, mb_Q = res[-3:]
 				mblossvals.append(res[:-1])
 		
 		# mean normalized advantage over PPO updates
@@ -894,11 +914,12 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		train_elapsed = time.time() - train_tstart
 		train_t_total += train_elapsed
 		mpi_print('update complete')
-
+		
 		lossvals = np.mean(mblossvals, axis=0)
 		tnow = time.time()
 		fps = int(nbatch / (tnow - tstart))
 
+		print('Logging phase')
 		if update % log_interval == 0 or update == 1:
 			step = update*nbatch
 			eval_rew_mean = utils.process_ep_buf(eval_active_ep_buf, tb_writer=tb_writer, suffix='_eval', step=step)

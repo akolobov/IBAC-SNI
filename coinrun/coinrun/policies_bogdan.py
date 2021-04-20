@@ -201,9 +201,9 @@ class CnnPolicy(object):
         else:
             X, processed_x = observation_input(ob_space, None)
             TRAIN_NUM_STEPS = Config.NUM_STEPS//16
-            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.NUM_ENVS, 64, 64, 3), name='Rep_Proc')
+            REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, 64, 64, 3), name='Rep_Proc')
             Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
-            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
+            Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, Config.N_SKILLS), name='Curr_skill')
             CLUSTER_DIMS = 128
             HIDDEN_DIMS_SSL = 256
             self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(CLUSTER_DIMS, Config.N_SKILLS)), trainable=True, name='Prototypes')
@@ -215,10 +215,10 @@ class CnnPolicy(object):
             # labels of Q value quantile bins
             self.LAB_NCE = tf.compat.v1.placeholder(tf.float32, [Config.POLICY_NHEADS,None])
             self.A_i = self.pdtype.sample_placeholder([None,Config.REP_LOSS_M,1],name='A_i')
-            self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None, Config.NUM_ENVS])
-            self.A_cluster = self.pdtype.sample_placeholder([None, Config.NUM_ENVS], name='A_cluster')
+            self.R_cluster = tf.compat.v1.placeholder(tf.float32, [None], name='R_cluster')
+            self.A_cluster = self.pdtype.sample_placeholder([None], name='A_cluster')
             
-        X = tf.reshape(REP_PROC, [-1, 64, 64, 3])
+        X = REP_PROC #tf.reshape(REP_PROC, [-1, 64, 64, 3])
         
         with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
             act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
@@ -240,8 +240,8 @@ class CnnPolicy(object):
             
             # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
             h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
-            act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
-            h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[128,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
+            # act_one_hot = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
+            # h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[128,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
             self.z_t = get_online_predictor(n_in=256*2,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
             
             self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
