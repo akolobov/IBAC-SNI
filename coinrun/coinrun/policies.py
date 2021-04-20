@@ -287,11 +287,11 @@ class CnnPolicy(object):
 				z_k_1, z_k_2, _, _ = choose_cnn(x_k)
 				z_k = tf.stop_gradient(tf.concat([z_k_1, z_k_2], axis=1))
 			
-			proj_k = tf.linalg.matmul(tf.transpose(z_k), Curl_W)
+			self.proj_k = tf.linalg.matmul(tf.transpose(z_k), Curl_W)
 			logits = tf.linalg.matmul(z_q, proj_k)
-			curl_logits = logits - tf.reduce_max(logits, axis=1)
-			curl_labels = tf.range(tf.shape(logits)[0])
-			self.curl_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=curl_labels, logits=curl_logits)
+			# curl_logits = logits - tf.reduce_max(logits, axis=1)
+			# curl_labels = tf.range(tf.shape(logits)[0])
+			self.curl_loss = tf.constant(0, dtype=tf.float32) #tf.nn.sparse_softmax_cross_entropy_with_logits(labels=curl_labels, logits=curl_logits)
 		elif Config.AGENT == 'ppg_ssl':
 			"""
 			MYOW part
@@ -572,6 +572,10 @@ class CnnPolicy(object):
 			elif Config.AGENT == 'ppg_ssl':
 				head_idx = 0
 				a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob, self.X_pi: ob})
+				return a, v, self.initial_state, neglogp
+			elif Config.AGENT == 'ppo_curl':
+				head_idx = 0
+				a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
 				return a, v, self.initial_state, neglogp
 			else:
 				# a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run, neglogp0_run[head_idx]], {X: ob})

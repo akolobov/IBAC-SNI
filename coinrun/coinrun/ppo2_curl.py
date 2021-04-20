@@ -317,7 +317,7 @@ class Model(object):
 		info_loss = info_loss[0]
 
 		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
-		aux_loss = train_model.curl_loss
+		aux_loss = pg_loss#train_model.curl_loss
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -379,7 +379,7 @@ class Model(object):
 			# import ipdb;ipdb.set_trace()
 			if target == 'CURL':
 				return sess.run(
-					[aux_loss, _train_aux],
+					[aux_loss, train_model.proj_k, _train_aux],
 					td_map
 				)[:-1]
 			else:
@@ -820,15 +820,15 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		inds_nce = np.arange(nbatch//runner.nce_update_freq)
 		E_CURL = 3
 		for _ in range(E_CURL):
-			np.random.shuffle(rl_inds)
+			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
 			for start in range(0, nbatch, nbatch_train):
 				sess.run([model.train_model.train_dropout_assign_ops])
-				end = min(start + nbatch_train, rl_set_len)
-				mbinds = rl_inds[start:end]
-				slices = (arr[mbinds] for arr in (sf01(rl_obs), sf01(returns), sf01(returns_i), sf01(masks), sf01(actions), sf01(values), values_i, skill, neglogpacs))
+				end = start + nbatch_train
+				mbinds = inds[start:end]
+				slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
 				slices_nce = (arr for arr in (values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce))
-				aux_loss = model.train(lrnow, cliprangenow, *slices, *slices_nce, target='CURL')
+				aux_loss, proj_k = model.train(lrnow, cliprangenow, *slices, *slices_nce, target='CURL')
 
 
 		for _ in range(noptepochs):
@@ -846,7 +846,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				else:
 					slices_nce = (arr for arr in (values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce))
 				
-				mblossvals.append(model.train(lrnow, cliprangenow, *slices, *slices_nce))
+				mblossvals.append(model.train(lrnow, cliprangenow, *slices, *slices_nce, target='policy'))
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])

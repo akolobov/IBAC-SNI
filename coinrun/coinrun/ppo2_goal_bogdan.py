@@ -438,7 +438,7 @@ class Model(object):
 			if train_target=='policy':
 				# import ipdb;ipdb.set_trace()
 				return sess.run(
-						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, proto_loss, train_model.codes, _train],
+						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, train_model.codes, _train],
 						td_map
 					)[:-1], adv_ratio
 			elif train_target=='clustering':
@@ -448,7 +448,7 @@ class Model(object):
 					)[:-1]
 			elif train_target=='myow':
 				return sess.run(
-						[proto_loss, myow_loss, train_model.codes, proto_loss, _train_myow],
+						[proto_loss, myow_loss, train_model.codes, _train_myow],
 						td_map
 					)[:-1]
 			
@@ -837,6 +837,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		# import ipdb;ipdb.set_trace()
 		
 		# mbinds = inds[0:min(nbatch_train,len(inds))]
+		print('Representation-RL split:',rep_set_len,rl_set_len)
+		myow_loss_res = 0.
 		print('Clustering phase')
 		for _ in range(E_clustering):
 			np.random.shuffle(rep_inds)
@@ -874,7 +876,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
 				v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
 
-				_, myow_loss_res, mb_Q, proto_ce_loss = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
+				_, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
 
 		# compute proper intrinsic reward before PPO updates
 		if Config.INTRINSIC:
@@ -902,7 +904,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				v_cluster = values[:,rl_idx].reshape(-1)[mbinds]
 				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
 				total_adv_ratio += adv_ratio
-				value_i_loss, cluster_loss_res, mb_Q = res[-3:]
+				value_i_loss, mb_Q = res[-2:]
 				mblossvals.append(res[:-1])
 		
 		# mean normalized advantage over PPO updates
