@@ -839,11 +839,13 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		# mbinds = inds[0:min(nbatch_train,len(inds))]
 		print('Representation-RL split:',rep_set_len,rl_set_len)
 		myow_loss_res = 0.
+		cluster_loss_res = 0.
 		print('Clustering phase')
 		for _ in range(E_clustering):
 			np.random.shuffle(rep_inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
 			for start in range(0, rep_set_len, nbatch_train):
+				print('Minibatch clustering ',start)
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = min(start + nbatch_train, rep_set_len)
 				mbinds = rep_inds[start:end]
@@ -866,6 +868,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			np.random.shuffle(rep_inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
 			for start in range(0, rep_set_len, nbatch_train):
+				print('Minibatch MYOW ',start)
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = min(start + nbatch_train, rep_set_len)
 				mbinds = rep_inds[start:end]
@@ -893,6 +896,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			np.random.shuffle(rl_inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
 			for start in range(0, rl_set_len, nbatch_train):
+				print('Minibatch RL ',start)
 				sess.run([model.train_model.train_dropout_assign_ops])
 				end = min(start + nbatch_train, rl_set_len)
 				mbinds = rl_inds[start:end]

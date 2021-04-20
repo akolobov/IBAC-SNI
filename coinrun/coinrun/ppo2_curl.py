@@ -317,7 +317,7 @@ class Model(object):
 		info_loss = info_loss[0]
 
 		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
-		aux_loss = pg_loss#train_model.curl_loss
+		aux_loss = tf.reduce_mean(train_model.curl_loss)
 
 		if Config.SYNC_FROM_ROOT:
 			trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
@@ -379,7 +379,7 @@ class Model(object):
 			# import ipdb;ipdb.set_trace()
 			if target == 'CURL':
 				return sess.run(
-					[aux_loss, train_model.proj_k, _train_aux],
+					[aux_loss, _train_aux],
 					td_map
 				)[:-1]
 			else:
@@ -818,7 +818,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		mean_cust_loss = 0
 		inds = np.arange(nbatch)
 		inds_nce = np.arange(nbatch//runner.nce_update_freq)
-		E_CURL = 3
+		E_CURL = Config.GOAL_EPOCHS
 		for _ in range(E_CURL):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
@@ -828,7 +828,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				mbinds = inds[start:end]
 				slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs))
 				slices_nce = (arr for arr in (values_i, returns_i, states_nce, anchors_nce, labels_nce, actions_nce, neglogps_nce, rewards_nce, infos_nce))
-				aux_loss, proj_k = model.train(lrnow, cliprangenow, *slices, *slices_nce, target='CURL')
+				aux_loss = model.train(lrnow, cliprangenow, *slices, *slices_nce, target='CURL')
+				mean_cust_loss += aux_loss[0]
 
 
 		for _ in range(noptepochs):
@@ -888,15 +889,17 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			mpi_print('total_timesteps', update*nbatch)
 			mpi_print([epinfo['r'] for epinfo in epinfobuf10])
 
-			rep_loss = 0
+			
 			if len(mblossvals):
 				for (lossval, lossname) in zip(lossvals, model.loss_names):
 					mpi_print(lossname, lossval)
 					tb_writer.log_scalar(lossval, lossname, step=step)
 			mpi_print('----\n')
 
-			wandb.log({"%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
+			wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
+						"%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
 						"%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
+						"%s/curl_loss"%(Config.ENVIRONMENT):mean_cust_loss,
 						"%s/custom_step"%(Config.ENVIRONMENT):step})
 		if can_save:
 			if save_interval and (update % save_interval == 0):
