@@ -569,6 +569,8 @@ class Runner(AbstractEnvRunner):
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
 				if maybeepinfo: epinfos.append(maybeepinfo)
+				print(info.keys())
+				print(info.values())
 			
 			for info in self.eval_infos:
 				eval_maybeepinfo = info.get('episode')
@@ -841,6 +843,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		print('Representation-RL split:',rep_set_len,rl_set_len)
 		myow_loss_res = 0.
 		cluster_loss_res = 0.
+		r_i_scale = 0.
 		print('Clustering phase')
 		for _ in range(E_clustering):
 			np.random.shuffle(rep_inds)
