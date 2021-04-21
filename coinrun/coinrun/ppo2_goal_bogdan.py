@@ -677,6 +677,8 @@ def constfn(val):
 		return val
 	return f
 
+def repeat_first_el(arr,k):
+	return np.concatenate([np.expand_dims(arr[0],0).repeat(k-1,0),arr],0)
 
 def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			 vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
@@ -814,6 +816,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		E_clustering = 1 #Config.GOAL_EPOCHS
 		
 		N_BATCH_AUX = 32
+
+		CLUSTER_T = Config.CLUSTER_T
 		total_proto_ce_loss = 0
 		# create dummy array for intrinsic reward during clustering updates
 		returns_i = np.zeros_like(returns)
@@ -821,12 +825,12 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		# split representation and rl levels
 		levels = np.random.permutation(np.unique(infos[:,:,2]))
 		print('Found %d levels in batch'%len(levels))
-		train_split = int( 0.2 * len(levels))
-		# train_split = int( 1 * len(levels))
+		# train_split = int( 0.2 * len(levels))
+		train_split = int( 1 * len(levels))
 		representation_levels = levels[:train_split]
 		representation_idx = np.where(np.isin(infos[0,:,2],representation_levels)*1)[0]
-		# rl_idx = representation_idx
-		rl_idx = np.where(1-1*np.isin(infos[0,:,2],representation_levels))[0]
+		rl_idx = representation_idx
+		# rl_idx = np.where(1-1*np.isin(infos[0,:,2],representation_levels))[0]
 
 		rep_obs = obs[:,representation_idx]
 		rl_obs = obs[:,rl_idx]
@@ -846,18 +850,19 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		for _ in range(E_clustering):
 			np.random.shuffle(rep_inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
-			for start in range(0, rep_set_len, nbatch_train):
+			for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
 				print('Minibatch clustering ',start)
 				sess.run([model.train_model.train_dropout_assign_ops])
-				end = min(start + nbatch_train, rep_set_len)
-				mbinds = rep_inds[start:end]
+				end = min(start + N_BATCH_AUX, Config.NUM_STEPS)
+				mbinds = inds_2d[start:end]
 				slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
-				# import ipdb;ipdb.set_trace()
-				obs_subsampled_cluster = sf01(rep_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
-				act_subsampled_cluster = actions[:,representation_idx].reshape(-1)[mbinds]
+
+				obs_subsampled_cluster = sf01(repeat_first_el(rep_obs[:,representation_idx][mbinds],CLUSTER_T)) #rep_obs.reshape(-1,64,64,3)[mbinds]
+				act_subsampled_cluster = sf01(repeat_first_el(actions[:,representation_idx][mbinds],CLUSTER_T))
 				r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
 				v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
 				
+				# h_shape=sess.run([model.train_model.h_shape],{model.train_model.REP_PROC:obs_subsampled_cluster})
 				cluster_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
 				if BOLZTMANN_PROTO_SKILL_SELECTION:
 					cluster_returns = np.zeros(Config.N_SKILLS)
@@ -869,15 +874,15 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		for _ in range(E_clustering):
 			np.random.shuffle(rep_inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
-			for start in range(0, rep_set_len, nbatch_train):
+			for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
 				print('Minibatch MYOW ',start)
 				sess.run([model.train_model.train_dropout_assign_ops])
-				end = min(start + nbatch_train, rep_set_len)
-				mbinds = rep_inds[start:end]
+				end = min(start + N_BATCH_AUX, Config.NUM_STEPS)
+				mbinds = inds_2d[start:end]
 				slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
-				# import ipdb;ipdb.set_trace()
-				obs_subsampled_cluster = sf01(rep_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
-				act_subsampled_cluster = actions[:,representation_idx].reshape(-1)[mbinds]
+
+				obs_subsampled_cluster = sf01(repeat_first_el(rep_obs[:,representation_idx][mbinds],CLUSTER_T)) #rep_obs.reshape(-1,64,64,3)[mbinds]
+				act_subsampled_cluster = sf01(repeat_first_el(actions[:,representation_idx][mbinds],CLUSTER_T))
 				r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
 				v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
 

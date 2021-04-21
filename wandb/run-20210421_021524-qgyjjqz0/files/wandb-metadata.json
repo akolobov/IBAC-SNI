@@ -1,0 +1,42 @@
+{
+    "os": "Linux-5.4.0-1034-azure-x86_64-with-debian-buster-sid",
+    "python": "3.6.12",
+    "heartbeatAt": "2021-04-21T02:15:26.692934",
+    "startedAt": "2021-04-21T02:15:24.567901",
+    "docker": null,
+    "gpu": "Tesla P40",
+    "gpu_count": 2,
+    "cpu_count": 12,
+    "cuda": null,
+    "args": [
+        "--env",
+        "bigfish",
+        "--run-id",
+        "curl",
+        "--num-levels",
+        "0",
+        "--short",
+        "--agent",
+        "ppo_curl",
+        "-gpu",
+        "1",
+        "-phase1",
+        "easy",
+        "-phase2",
+        "easy",
+        "-disable_wandb",
+        "0"
+    ],
+    "state": "running",
+    "program": "/home/ahmed/jobs/IBAC-SNI/coinrun/coinrun/train_agent.py",
+    "codePath": "coinrun/coinrun/train_agent.py",
+    "git": {
+        "remote": "https://github.com/ahmeda14960/IBAC-SNI.git",
+        "commit": "05eea23f855e85478f93973e9b14832a60a6e4f1"
+    },
+    "email": "ahmedah@stanford.edu",
+    "root": "/home/ahmed/jobs/IBAC-SNI",
+    "host": "aidl",
+    "username": "ahmed",
+    "executable": "/home/ahmed/jobs/anaconda3/envs/aidl/bin/python3"
+}

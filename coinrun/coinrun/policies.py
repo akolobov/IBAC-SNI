@@ -276,7 +276,7 @@ class CnnPolicy(object):
 			"""
 			resized_x = tf.image.resize(processed_x, [84, 84])
 			
-			with tf.compat.v1.variable_scope("model_0", reuse=tf.compat.v1.AUTO_REUSE):
+			with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
 				# resize and randomly crop observations. 
 				x_q = tf.image.random_crop(resized_x, [1024, 64, 64, 3])
 				self.total_batch = x_q

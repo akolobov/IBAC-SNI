@@ -78,9 +78,18 @@ def running_stats_fun(run_stats, buf, clip, clip_state):
 
 
 def soft_update(source_variables,target_variables,tau=1.0):
-	for (v_s, v_t) in zip(source_variables, target_variables):
-		v_t.shape.assert_is_compatible_with(v_s.shape)
-		v_t.assign((1 - tau) * v_t + tau * v_s)
+	print('EMA update')
+	source_variables = sorted(source_variables, key=lambda x: x.name)
+	target_variables = sorted(target_variables, key=lambda x: x.name)
+	for v_t in target_variables:
+		v_t_suffix = '/'.join(v_t.name.split('/')[1:])
+		for v_s in source_variables:
+			v_s_suffix = '/'.join(v_s.name.split('/')[1:])
+			if v_t_suffix == v_s_suffix: 
+				v_t.shape.assert_is_compatible_with(v_s.shape)
+				v_t.assign((1 - tau) * v_t + tau * v_s)
+				# print('loaded param %s'%v_t.name)
+				break
 
 # helper function to turn numpy array into video file
 def vidwrite(filename, images, framerate=60, vcodec='libx264'):
@@ -316,7 +325,7 @@ class Model(object):
 		assert len(info_loss) == 1
 		info_loss = info_loss[0]
 
-		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
+		loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + tf.reduce_mean(train_model.curl_loss)
 		aux_loss = tf.reduce_mean(train_model.curl_loss)
 
 		if Config.SYNC_FROM_ROOT:
@@ -774,12 +783,10 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		lrnow = lr(frac)
 		cliprangenow = cliprange(frac)
 
-		# if Config.CUSTOM_REP_LOSS:
-		#     params = tf.compat.v1.trainable_variables()
-		#     source_params = [p for p in params if p.name in model.train_model.RL_enc_param_names]
-		#     for i in range(1,Config.POLICY_NHEADS):
-		#         target_i_params = [p for p in params if p.name in model.train_model.target_enc_param_names[i]]
-		#         soft_update(source_params,target_i_params,tau=0.95)
+		params = tf.compat.v1.trainable_variables()
+		source_params = [p for p in params if "online" in p.name]
+		target_params = [p for p in params if "target" in p.name]
+		soft_update(source_params, target_params, tau=0.95)
 
 		mpi_print('collecting rollouts...')
 		run_tstart = time.time()
@@ -818,7 +825,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		mean_cust_loss = 0
 		inds = np.arange(nbatch)
 		inds_nce = np.arange(nbatch//runner.nce_update_freq)
-		E_CURL = Config.GOAL_EPOCHS
+		E_CURL = 0 #Config.GOAL_EPOCHS
 		for _ in range(E_CURL):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()

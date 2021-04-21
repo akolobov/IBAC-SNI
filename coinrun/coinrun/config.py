@@ -63,6 +63,8 @@ class ConfigSingle(object):
 
         # for Mine Your Own View SSL prediction
         bool_keys.append(('myow','myow'))
+        # Sinkhorn consecutive timesteps
+        type_keys.append(('cluster_t', 'cluster_t', int, 2))
         ### Others:
         # Use hard cluster/code assignments for intrinsic reward
         bool_keys.append(('hgoal', 'hard_codes'))
