@@ -569,8 +569,6 @@ class Runner(AbstractEnvRunner):
 			for info in self.infos:
 				maybeepinfo = info.get('episode')
 				if maybeepinfo: epinfos.append(maybeepinfo)
-				print(info.keys())
-				print(info.values())
 			
 			for info in self.eval_infos:
 				eval_maybeepinfo = info.get('episode')
@@ -821,14 +819,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		returns_i = np.zeros_like(returns)
 
 		# split representation and rl levels
-		levels = np.random.permutation(np.unique(infos[:,:,-1]))
+		levels = np.random.permutation(np.unique(infos[:,:,2]))
 		print('Found %d levels in batch'%len(levels))
 		train_split = int( 0.2 * len(levels))
 		# train_split = int( 1 * len(levels))
 		representation_levels = levels[:train_split]
-		representation_idx = np.where(np.isin(infos[0,:,-1],representation_levels)*1)[0]
+		representation_idx = np.where(np.isin(infos[0,:,2],representation_levels)*1)[0]
 		# rl_idx = representation_idx
-		rl_idx = np.where(1-1*np.isin(infos[0,:,-1],representation_levels))[0]
+		rl_idx = np.where(1-1*np.isin(infos[0,:,2],representation_levels))[0]
 
 		rep_obs = obs[:,representation_idx]
 		rl_obs = obs[:,rl_idx]
