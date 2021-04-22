@@ -204,8 +204,10 @@ class CnnPolicy(object):
 			REP_PROC = tf.compat.v1.placeholder(dtype=tf.float32, shape=(None, 64, 64, 3), name='Rep_Proc')
 			Z_INT = tf.compat.v1.placeholder(dtype=tf.int32, shape=(), name='Curr_Skill_idx')
 			Z = tf.compat.v1.placeholder(dtype=tf.float32, shape=(nbatch, Config.N_SKILLS), name='Curr_skill')
+			CODES = tf.compat.v1.placeholder(dtype=tf.float32, shape=(1024, Config.N_SKILLS), name='Train_Codes')
 			CLUSTER_DIMS = 256
 			HIDDEN_DIMS_SSL = 256
+			STEP_BOOL = tf.placeholder(tf.bool, shape=[])
 			self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(CLUSTER_DIMS, Config.N_SKILLS)), trainable=True, name='Prototypes')
 			self.A = self.pdtype.sample_placeholder([None],name='A')
 			# trajectories of length m, for N policy heads.
@@ -220,8 +222,7 @@ class CnnPolicy(object):
 			
 		if Config.AGENT == 'ppo_goal':
 			# fetch ob_t from joint observations for step
-			# X = REP_PROC[0, :, :, :, :]
-			X = REP_PROC #tf.reshape(REP_PROC, [-1, 64, 64, 3])
+			X = REP_PROC
 			with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
 				act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
 				self.train_dropout_assign_ops = fast_dropout_assigned_ops
@@ -375,8 +376,6 @@ class CnnPolicy(object):
 				h_t = self.h_codes[:,:-1]
 				h_tp1 = self.h_codes[:,1:]
 				
-				self.h_t = h_t
-				self.h_tp1 = h_tp1
 				# h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
 				h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
 				if not Config.CLUSTER_CONDIT_POLICY:
@@ -473,14 +472,22 @@ class CnnPolicy(object):
 			Condition on soft-cluster assignments for policy head (Cluster Conditioned Policy )
 			"""
 			if Config.CLUSTER_CONDIT_POLICY:
-				self.concat_code = tf.stop_gradient(tf.reshape(self.codes, [-1, Config.N_SKILLS]))
 				self.h = self.h[Config.NUM_ENVS:]
+				concat_code_1 = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(32, Config.N_SKILLS)), trainable=False, name='Code_Var_step')
+				concat_code_2 = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(1024, Config.N_SKILLS)), trainable=False, name='Code_Var_train')
+				def live_codes():
+					with tf.control_dependencies([tf.assign(concat_code_1, tf.stop_gradient(tf.reshape(self.codes, [-1, Config.N_SKILLS])))]):
+						return tf.identity(concat_code_1)
+				def computed_codes():
+					with tf.control_dependencies([tf.assign(concat_code_2, CODES)]):
+						return tf.identity(concat_code_2)
+				self.concat_code = tf.cond(STEP_BOOL, live_codes, computed_codes)
+				
 				# print(self.h)
 				# print(concat_code)
-				self.h = tf.concat([self.h, self.concat_code], axis=1)
-				#self.h = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(self.h,1),1), concat_code]),1),1)
+				#h_seq = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq,1),1), act_one_hot]),1),1)
 			else:
-				self.concat_code = tf.zeros([1,Config.N_SKILLS])
+				concat_code = tf.zeros([1,Config.N_SKILLS])
 				
 		if Config.AGENT == 'ppg':
 			with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -521,7 +528,7 @@ class CnnPolicy(object):
 						self.pd_train_i = self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]
 				else:
 					with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
-						self.pd_train = [self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]]
+						self.pd_train = [self.pdtype.pdfromlatent(tf.concat([self.h, self.concat_code], axis=1), init_scale=0.01)[0]]
 				
 				if Config.CUSTOM_REP_LOSS and Config.POLICY_NHEADS > 1:
 					# self.vf_train = [fc(self.h, 'v'+str(i), 1)[:, 0] for i in range(Config.POLICY_NHEADS)]
@@ -560,7 +567,8 @@ class CnnPolicy(object):
 				return a, v, v_i, r_i, self.initial_state, neglogp
 			elif Config.AGENT == 'ppo_goal':
 				if Config.CLUSTER_CONDIT_POLICY:
-					a, v, v_i, neglogp, h, h_codes, ht, htp1, ccode = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.h, self.h_codes, h_t, h_tp1, self.concat_code], {REP_PROC: ob, Z: one_hot_skill})
+					# for step, pass in dummy values for code placeholder since we compute the codes live
+					a, v, v_i, neglogp, h, h_codes, ht, htp1, ccode = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.h, self.h_codes, h_t, h_tp1, self.concat_code], {REP_PROC: ob, Z: one_hot_skill, CODES: np.zeros(shape=(1024, Config.N_SKILLS)), STEP_BOOL: True})
 					return a, v, v_i, self.initial_state, neglogp,  h, h_codes, ht, htp1, ccode
 				else:
 					a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {REP_PROC: ob, Z: one_hot_skill})
@@ -639,6 +647,8 @@ class CnnPolicy(object):
 		self.compute_codes = compute_codes
 		self.compute_hard_codes = compute_hard_codes
 		self.compute_cluster_returns = compute_cluster_returns
+		self.CODES = CODES
+		self.STEP_BOOL = STEP_BOOL
 
 
 def get_policy():
