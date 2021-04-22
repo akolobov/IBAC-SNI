@@ -28,7 +28,8 @@ python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --shor
 python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 --myow
 (with intrinsic reward decay)
 python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 -itr_decay 0.9
-(all the above)
+(default Cluster Conditioned Policy)
+python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 --ema --myow --ccp
 RND:
 python3 -m coinrun.train_agent --env coinrun --run-id rnd --num-levels 0 --short --agent ppo_rnd
 
@@ -362,6 +363,9 @@ def main():
         elif Config.AGENT == 'ppo_goal_bogdan':
             from coinrun import ppo2_goal_bogdan as agent
             from coinrun import policies_bogdan as policies
+        elif Config.AGENT == 'ppg_cluster':
+            from coinrun import ppo2_ppg_sinkhorn as agent
+            from coinrun import policies_ppg_sinkhorn as policies
         policy = policies.get_policy()
 
         agent.learn(policy=policy,

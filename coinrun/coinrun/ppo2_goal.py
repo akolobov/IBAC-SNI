@@ -455,7 +455,7 @@ class Model(object):
 			
 			if train_target=='policy':
 				return sess.run(
-						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, train_model.codes, grad_free_vars, _train],
+						[pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, cluster_loss, train_model.codes, train_model.h, train_model.h_codes, train_model.concat_code, grad_free_vars, _train],
 						td_map
 					)[:-1], adv_ratio
 			elif train_target=='clustering':
@@ -572,6 +572,11 @@ class Runner(AbstractEnvRunner):
 			joint_ob = np.concatenate([ob_tm1, ob_t], 0)
 			if Config.CLUSTER_CONDIT_POLICY:
 				actions, values, values_i, self.states, neglogpacs, h, h_codes, ht, htp1, ccode = self.model.step(joint_ob.reshape(-1, 64, 64, 3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
+				print('step h', h.shape)
+				print('step h_codes', h_codes.shape)
+				print('step ht', ht.shape)
+				print('step htp1', htp1.shape)
+				print('step ccode', ccode.shape)
 			else:
 				actions, values, values_i, self.states, neglogpacs = self.model.step(joint_ob.reshape(-1,64,64,3),  update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
 			mb_obs.append(self.obs.copy())
@@ -914,7 +919,10 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				r_cluster = returns[inds_2d[:,0]][:N_BATCH_AUX+1]#.reshape(-1)
 				res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
 				total_adv_ratio += adv_ratio
-				value_i_loss, cluster_loss_res, mb_Q, grad_free_vars = res[-4:]
+				value_i_loss, cluster_loss_res, mb_Q, h, h_codes, ccode, grad_free_vars = res[-7:]
+				print('h', h.shape)
+				print('h_codes', h_codes.shape)
+				print('ccode', ccode.shape)
 				mblossvals.append(res[:-2])
 		# print('PPO')
 		# for v in grad_free_vars:

@@ -207,7 +207,6 @@ class CnnPolicy(object):
 			CLUSTER_DIMS = 256
 			HIDDEN_DIMS_SSL = 256
 			self.protos = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(CLUSTER_DIMS, Config.N_SKILLS)), trainable=True, name='Prototypes')
-			Curl_W = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(1024, 1024)), trainable=True, name='Curl_W_Matrix')
 			self.A = self.pdtype.sample_placeholder([None],name='A')
 			# trajectories of length m, for N policy heads.
 			self.STATE = tf.compat.v1.placeholder(tf.float32, [None,64,64,3])
@@ -274,6 +273,7 @@ class CnnPolicy(object):
 			"""
 			CURL implementation, variable names model psuedocode described in paper
 			"""
+			Curl_W = tf.compat.v1.Variable(initial_value=tf.random.normal(shape=(1024, 1024)), trainable=True, name='Curl_W_Matrix')
 			resized_x = tf.image.resize(processed_x, [84, 84])
 			
 			with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
@@ -375,6 +375,8 @@ class CnnPolicy(object):
 				h_t = self.h_codes[:,:-1]
 				h_tp1 = self.h_codes[:,1:]
 				
+				self.h_t = h_t
+				self.h_tp1 = h_tp1
 				# h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
 				h_seq = tf.reshape( tf.concat([h_t,h_tp1],2), (-1,256*2))
 				if not Config.CLUSTER_CONDIT_POLICY:
@@ -471,14 +473,14 @@ class CnnPolicy(object):
 			Condition on soft-cluster assignments for policy head (Cluster Conditioned Policy )
 			"""
 			if Config.CLUSTER_CONDIT_POLICY:
-				concat_code = tf.stop_gradient(tf.reshape(self.codes, [-1, Config.N_SKILLS]))
+				self.concat_code = tf.stop_gradient(tf.reshape(self.codes, [-1, Config.N_SKILLS]))
 				self.h = self.h[Config.NUM_ENVS:]
 				# print(self.h)
 				# print(concat_code)
-				# self.h = tf.concat([self.h, concat_code], axis=1)
-				self.h = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(self.h,1),1), concat_code]),1),1)
+				self.h = tf.concat([self.h, self.concat_code], axis=1)
+				#self.h = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(self.h,1),1), concat_code]),1),1)
 			else:
-				concat_code = tf.zeros([1,Config.N_SKILLS])
+				self.concat_code = tf.zeros([1,Config.N_SKILLS])
 				
 		if Config.AGENT == 'ppg':
 			with tf.compat.v1.variable_scope("pi_branch", reuse=tf.compat.v1.AUTO_REUSE):
@@ -558,7 +560,7 @@ class CnnPolicy(object):
 				return a, v, v_i, r_i, self.initial_state, neglogp
 			elif Config.AGENT == 'ppo_goal':
 				if Config.CLUSTER_CONDIT_POLICY:
-					a, v, v_i, neglogp, h, h_codes, ht, htp1, ccode = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.h, self.h_codes, h_t, h_tp1, concat_code], {REP_PROC: ob, Z: one_hot_skill})
+					a, v, v_i, neglogp, h, h_codes, ht, htp1, ccode = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0], self.h, self.h_codes, h_t, h_tp1, self.concat_code], {REP_PROC: ob, Z: one_hot_skill})
 					return a, v, v_i, self.initial_state, neglogp,  h, h_codes, ht, htp1, ccode
 				else:
 					a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {REP_PROC: ob, Z: one_hot_skill})
