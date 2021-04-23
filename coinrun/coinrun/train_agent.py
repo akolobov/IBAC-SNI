@@ -57,6 +57,10 @@ all envs: bigfish bossfight caveflyer chaser climber coinrun dodgeball fruitbot 
 
 To SSH into Dilbert node:
 cd /mnt/batch/tasks/workitems/job3244/job-1/task2/wd/.xt/cwd/rl_nexus
+
+
+
+GS envs: bigfish leaper starpilot plunder
 """
 print('Importing packages')
 import os
