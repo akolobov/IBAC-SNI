@@ -813,6 +813,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         
         E_ppo = 1 #noptepochs
         E_clustering = 1 #Config.GOAL_EPOCHS
+        E_MYOW = 1
         
         N_BATCH_AUX = 32
 
@@ -870,7 +871,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                         cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
                 total_proto_ce_loss += proto_ce_loss
         print('MYOW phase')
-        for _ in range(E_clustering):
+        for _ in range(E_MYOW):
             np.random.shuffle(rep_inds)
             inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
             for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):

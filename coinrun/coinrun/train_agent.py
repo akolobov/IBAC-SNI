@@ -61,6 +61,8 @@ cd /mnt/batch/tasks/workitems/job3244/job-1/task2/wd/.xt/cwd/rl_nexus
 
 
 GS envs: bigfish leaper starpilot plunder
+
+python jobs_launcher.py --agent ppo_goal_bogdan --env bigfish leaper starpilot plunder  --nheads 200  --run_ID bogdan_smarterMYOW --n_knn 1 3 --cluster_T 10
 """
 print('Importing packages')
 import os
