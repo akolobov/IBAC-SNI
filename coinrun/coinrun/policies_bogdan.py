@@ -281,11 +281,10 @@ class CnnPolicy(object):
             # Find cluster adjacency scores
             dist = _compute_distance(tf.transpose(self.protos),tf.transpose(self.protos))
             
-            k_t = 1
+            k_t = Config.N_KNN
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
 
             cluster_idx = tf.cast(tf.argmax(scores,1),tf.int32)
-            nearby_cluster_idx = tf.gather(indx[:,-1],cluster_idx)
 
             cluster_membership_list = []
             for i in range(Config.N_SKILLS):
@@ -296,7 +295,7 @@ class CnnPolicy(object):
                 # cluster_idx = tf.cast(tf.round(tf.random.uniform((1,),maxval=tf.cast(tf.shape(cluster_vecs),tf.float32))[0]),tf.int32) # randomly sample a vector from its cluster
                 cluster_membership_list.append(cluster_vecs[0]) # take first vector of this cluster as representative
             cluster_membership_list = tf.stack(cluster_membership_list)
-            nearby_batch_vecs = tf.reshape(tf.gather(cluster_membership_list,tf.cast(nearby_cluster_idx,tf.int32)),(-1,))
+            
             # import ipdb;ipdb.set_trace()
             
             # N_target = y_target
@@ -311,16 +310,17 @@ class CnnPolicy(object):
 
             self.myow_loss = 0.
             for k in range(k_t):
-                indx2 = indx[:,k]
+                nearby_cluster_idx = tf.gather(indx[:,k+1],cluster_idx)
+                nearby_batch_vecs = tf.reshape(tf.gather(cluster_membership_list,tf.cast(nearby_cluster_idx,tf.int32)),(-1,))
                 N_target = tf.gather(y_target, nearby_batch_vecs)
                 v_target = v_target_net(N_target)
                 r_target = r_target_net(v_target)
 
                 self.myow_loss += tf.reduce_mean(cos_loss(r_online, v_target)) #+ tf.reduce_mean(cos_loss(r_target, v_online))
 
-            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                phi_s = get_online_predictor(n_in=256,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(tf.reshape(h_acc[-1],(-1,256)))
-                self.myow_loss += tf.reduce_mean(cos_loss(phi_s, tf.transpose(tf.gather(self.protos,cluster_idx,axis=1),(1,0)) ))
+            # with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            #     phi_s = get_online_predictor(n_in=256,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(tf.reshape(h_acc[-1],(-1,256)))
+            #     self.myow_loss += tf.reduce_mean(cos_loss(phi_s, tf.transpose(tf.gather(self.protos,cluster_idx,axis=1),(1,0)) ))
 
 
         """
