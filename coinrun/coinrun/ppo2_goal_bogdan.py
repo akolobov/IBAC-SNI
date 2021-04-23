@@ -364,7 +364,6 @@ class Model(object):
         p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / 0.1, axis=1)
         proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
 
-        vpred_loss = train_model.cluster_value_mse_loss
         if Config.MYOW:
             myow_loss = train_model.myow_loss
         else:

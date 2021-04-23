@@ -256,50 +256,48 @@ class CnnPolicy(object):
 
         
         if Config.MYOW:
-            """
-            Compute average cluster reward 1/N_i \sum_{C_i} V^pi(s_j)
 
-            TODO: mine nearby representations of [st,stp1] with [st,at,stp1]? these two should be close if transitions are deterministic
-            """
-            cluster_idx = tf.argmax(scores,1)  
-            if False:
-                reward_scale = []
-                for i in range(Config.N_SKILLS):
-                    filter_ = tf.cast(tf.fill(tf.shape(self.R_cluster), i),tf.float32)
-                    mask = tf.cast(tf.math.equal(filter_ , self.codes),tf.float32)
-                    rets_cluster = tf.reduce_mean(mask * self.R_cluster)
-                    reward_scale.append( rets_cluster )
-                self.cluster_returns = tf.stack(reward_scale)
-                # Predict the average cluster value from the prototype (centroid)
-                with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                    self.cluster_value_mse_loss = tf.reduce_mean( (get_predictor(n_in=CLUSTER_DIMS,n_out=1)(tf.transpose(self.protos)) - self.cluster_returns)**2 )
-            else:
-                self.cluster_value_mse_loss = 0.
 
             """
             MYOW where k-NN neighbors are replaced by Sinkhorn clusters
             """
-            with tf.compat.v1.variable_scope("random", reuse=tf.compat.v1.AUTO_REUSE):
-                # h_codes: n_batch x n_t x n_rkhs
-                act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
-                h_codes_target =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
-                h_t_target = h_codes_target[:,:-1]
-                h_tp1_target = h_codes_target[:,1:]
+            # with tf.compat.v1.variable_scope("random", reuse=tf.compat.v1.AUTO_REUSE):
+            #     # h_codes: n_batch x n_t x n_rkhs
+            #     act_condit_target, act_invariant_target, _, _ = choose_cnn(X)
+            #     h_codes_target =  tf.transpose(tf.reshape(tf.concat([act_condit_target, act_invariant_target], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
+            #     h_t_target = h_codes_target[:,:-1]
+            #     h_tp1_target = h_codes_target[:,1:]
                 
-                # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
-                h_seq_target = tf.reshape( tf.concat([h_t_target,h_tp1_target],2), (-1,256*Config.CLUSTER_T))
+            #     # h_a_t = tf.transpose(tf.reshape(get_predictor(n_in=ac_space.n,n_out=256,prefix="SH_a_emb")( act_one_hot), (-1,Config.NUM_ENVS,256)), (1,0,2))
+            #     h_seq_target = tf.reshape( tf.concat([h_t_target,h_tp1_target],2), (-1,256*Config.CLUSTER_T))
                 # act_one_hot_target = tf.reshape(tf.one_hot(self.A_cluster,ac_space.n), (-1,ac_space.n))
                 # h_seq_target = tf.squeeze(tf.squeeze(FiLM(widths=[512,512], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(h_seq_target,1),1), act_one_hot_target]),1),1)
             y_online = h_seq
-            y_target = tf.stop_gradient(h_seq_target)
+            y_target = tf.stop_gradient(h_seq)
             # y_reward = tf.reshape(self.R_cluster,(-1,1))
             
 
-            # get K closest vectors by Sinkhorn scores
-            # dist = _compute_distance(y_reward,y_reward)
-            dist = _compute_distance(y_online,y_target)
-            k_t = 3
+            
+            # Find cluster adjacency scores
+            dist = _compute_distance(tf.transpose(self.protos),tf.transpose(self.protos))
+            
+            k_t = 1
             vals, indx = tf.nn.top_k(-dist, k_t+1,sorted=True)
+
+            cluster_idx = tf.cast(tf.argmax(scores,1),tf.int32)
+            nearby_cluster_idx = tf.gather(indx[:,-1],cluster_idx)
+
+            cluster_membership_list = []
+            for i in range(Config.N_SKILLS):
+                filter_ = tf.cast(tf.fill(tf.shape(cluster_idx), i),tf.int32)
+                mask = tf.math.equal(filter_ , cluster_idx)
+                cluster_vecs = tf.cast(tf.where(mask),tf.int32)
+                cluster_vecs = tf.cond(tf.math.equal(tf.shape(cluster_vecs)[0],0),lambda :tf.constant([[0]],tf.int32),lambda :cluster_vecs)
+                # cluster_idx = tf.cast(tf.round(tf.random.uniform((1,),maxval=tf.cast(tf.shape(cluster_vecs),tf.float32))[0]),tf.int32) # randomly sample a vector from its cluster
+                cluster_membership_list.append(cluster_vecs[0]) # take first vector of this cluster as representative
+            cluster_membership_list = tf.stack(cluster_membership_list)
+            nearby_batch_vecs = tf.reshape(tf.gather(cluster_membership_list,tf.cast(nearby_cluster_idx,tf.int32)),(-1,))
+            # import ipdb;ipdb.set_trace()
             
             # N_target = y_target
             with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
@@ -314,7 +312,7 @@ class CnnPolicy(object):
             self.myow_loss = 0.
             for k in range(k_t):
                 indx2 = indx[:,k]
-                N_target = tf.gather(y_target, indx2)
+                N_target = tf.gather(y_target, nearby_batch_vecs)
                 v_target = v_target_net(N_target)
                 r_target = r_target_net(v_target)
 
@@ -324,7 +322,6 @@ class CnnPolicy(object):
                 phi_s = get_online_predictor(n_in=256,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(tf.reshape(h_acc[-1],(-1,256)))
                 self.myow_loss += tf.reduce_mean(cos_loss(phi_s, tf.transpose(tf.gather(self.protos,cluster_idx,axis=1),(1,0)) ))
 
-            self.myow_loss += self.cluster_value_mse_loss
 
         """
         Intrinsic rewards

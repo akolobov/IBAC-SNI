@@ -841,7 +841,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		total_proto_ce_loss = 0
 		# create dummy array for intrinsic reward during clustering updates
 		returns_i = np.zeros_like(returns)
-		print('sinkhorn')
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -861,7 +860,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 					for i in range(Config.N_SKILLS):
 						cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
 				total_proto_ce_loss += proto_ce_loss
-		print('myow')
 		for _ in range(E_clustering):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)
@@ -885,7 +883,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			returns_i = np.zeros_like(returns)
 		
 		total_adv_ratio = 0
-		print('ppo')
 		for _ in range(E_ppo):
 			np.random.shuffle(inds)
 			inds_2d = np.random.uniform(size=(Config.NUM_STEPS,Config.NUM_ENVS)).argsort(0)

@@ -1,0 +1,225 @@
+wandb_version: 1
+
+NEGS:
+  desc: null
+  value: 20
+POLICY_NHEADS:
+  desc: null
+  value: 1
+_wandb:
+  desc: null
+  value:
+    cli_version: 0.10.22
+    framework: tensorflow
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    python_version: 3.6.12
+    t:
+      1:
+      - 3
+      - 5
+      2:
+      - 3
+      - 5
+      4: 3.6.12
+      5: 0.10.22
+      8:
+      - 5
+agent:
+  desc: null
+  value: ppo_goal
+architecture:
+  desc: null
+  value: impala
+beta:
+  desc: null
+  value: -1.0
+beta_l2a:
+  desc: null
+  value: -1.0
+cluster_condit_policy:
+  desc: null
+  value: true
+cluster_t:
+  desc: null
+  value: 2
+custom_rep_loss:
+  desc: null
+  value: false
+disable_wandb:
+  desc: null
+  value: 0
+dropout:
+  desc: null
+  value: 0.0
+ema:
+  desc: null
+  value: true
+entropy_coeff:
+  desc: null
+  value: 0.01
+environment:
+  desc: null
+  value: bigfish
+epsilon_greedy:
+  desc: null
+  value: 0.0
+first_phase:
+  desc: null
+  value: easy
+frame_stack:
+  desc: null
+  value: 1
+game_type:
+  desc: null
+  value: standard
+gamma:
+  desc: null
+  value: 0.999
+goal_epochs:
+  desc: null
+  value: 1
+hard_codes:
+  desc: null
+  value: false
+high_difficulty:
+  desc: null
+  value: false
+intrinsic:
+  desc: null
+  value: false
+intrinsic_reward_decay:
+  desc: null
+  value: 0.997
+is_high_res:
+  desc: null
+  value: false
+l2_weight:
+  desc: null
+  value: 0.0
+learning_rate:
+  desc: null
+  value: 0.0005
+long_training:
+  desc: null
+  value: false
+myow:
+  desc: null
+  value: true
+n_skills:
+  desc: null
+  value: 50
+nodes:
+  desc: null
+  value: 256
+nr_samples:
+  desc: null
+  value: 1
+num_envs:
+  desc: null
+  value: 32
+num_eval:
+  desc: null
+  value: 20
+num_gpus:
+  desc: null
+  value: 1
+num_levels:
+  desc: null
+  value: 0
+num_minibatches:
+  desc: null
+  value: 8
+num_steps:
+  desc: null
+  value: 256
+openai:
+  desc: null
+  value: false
+paint_vel_info:
+  desc: null
+  value: -1
+ppo_epochs:
+  desc: null
+  value: 3
+r_clip:
+  desc: null
+  value: 1
+rep:
+  desc: null
+  value: 1
+rep_loss_m:
+  desc: null
+  value: 1
+rep_loss_weight:
+  desc: null
+  value: 0
+replay:
+  desc: null
+  value: false
+restore_id:
+  desc: null
+  value: null
+restore_idd:
+  desc: null
+  value: null
+restore_step:
+  desc: null
+  value: null
+run_id:
+  desc: null
+  value: goal
+s_clip:
+  desc: null
+  value: 10
+save_images:
+  desc: null
+  value: 0
+save_interval:
+  desc: null
+  value: 10
+second_phase:
+  desc: null
+  value: easy
+set_seed:
+  desc: null
+  value: -1
+short_training:
+  desc: null
+  value: true
+skill_epochs:
+  desc: null
+  value: 2
+sni:
+  desc: null
+  value: false
+sni2:
+  desc: null
+  value: false
+test:
+  desc: null
+  value: false
+test_eval:
+  desc: null
+  value: false
+test_ratio:
+  desc: null
+  value: 4
+train_eval:
+  desc: null
+  value: false
+use_batch_norm:
+  desc: null
+  value: 0
+use_black_white:
+  desc: null
+  value: 0
+use_data_augmentation:
+  desc: null
+  value: 0
+use_lstm:
+  desc: null
+  value: 0
+very_short_training:
+  desc: null
+  value: false

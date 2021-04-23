@@ -220,17 +220,20 @@ class CnnPolicy(object):
             
         X = REP_PROC #tf.reshape(REP_PROC, [-1, 64, 64, 3])
         
-        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
             with tf.compat.v1.variable_scope("value", reuse=tf.compat.v1.AUTO_REUSE):
                 act_condit, act_invariant, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
-                self.train_dropout_assign_ops = fast_dropout_assigned_ops
-                self.run_dropout_assign_ops = slow_dropout_assign_ops
+
+        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            with tf.compat.v1.variable_scope("value", reuse=tf.compat.v1.AUTO_REUSE):
                 self.h_v =  tf.concat([act_condit, act_invariant], axis=1)
         
-        with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
+        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             with tf.compat.v1.variable_scope("policy", reuse=tf.compat.v1.AUTO_REUSE):
-                act_condit_pi, act_invariant_pi, _, _ = choose_cnn(X,prefix='')
-				
+                act_condit_pi, act_invariant_pi, slow_dropout_assign_ops, fast_dropout_assigned_ops = choose_cnn(X)
+                self.train_dropout_assign_ops = fast_dropout_assigned_ops
+                self.run_dropout_assign_ops = slow_dropout_assign_ops
+
         with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             with tf.compat.v1.variable_scope("policy", reuse=tf.compat.v1.AUTO_REUSE):
                 self.h_pi =  tf.concat([act_condit_pi, act_invariant_pi], axis=1)
@@ -243,7 +246,7 @@ class CnnPolicy(object):
         """
 
         with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-            with tf.compat.v1.variable_scope("policy", reuse=tf.compat.v1.AUTO_REUSE):
+            with tf.compat.v1.variable_scope("value", reuse=tf.compat.v1.AUTO_REUSE):
                 # h_codes: n_batch x n_t x n_rkhs
                 act_condit, act_invariant, _, _ = choose_cnn(X)
                 self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
@@ -332,9 +335,9 @@ class CnnPolicy(object):
 
                 self.myow_loss += tf.reduce_mean(cos_loss(r_online, v_target)) #+ tf.reduce_mean(cos_loss(r_target, v_online))
 
-            with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-                phi_s = get_online_predictor(n_in=256,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(tf.reshape(h_acc[-1],(-1,256)))
-                self.myow_loss += tf.reduce_mean(cos_loss(phi_s, tf.transpose(tf.gather(self.protos,cluster_idx,axis=1),(1,0)) ))
+            # with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            #     phi_s = get_online_predictor(n_in=256,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(tf.reshape(h_acc[-1],(-1,256)))
+            #     self.myow_loss += tf.reduce_mean(cos_loss(phi_s, tf.transpose(tf.gather(self.protos,cluster_idx,axis=1),(1,0)) ))
 
             self.myow_loss += self.cluster_value_mse_loss
 
@@ -356,8 +359,8 @@ class CnnPolicy(object):
 
 
         # Use the current head for classical PPO updates
-        a0_run = [self.pd_run[head_idx].sample() for head_idx in range(Config.POLICY_NHEADS)]
-        neglogp0_run = [self.pd_run[head_idx].neglogp(a0_run[head_idx]) for head_idx in range(Config.POLICY_NHEADS)]
+        a0_run = [self.pd_run[0].sample() ]
+        neglogp0_run = [self.pd_run[0].neglogp(a0_run[0]) ]
         self.initial_state = None
 
         def step(ob, update_frac, skill_idx=None, one_hot_skill=None, nce_dict = {},  *_args, **_kwargs):

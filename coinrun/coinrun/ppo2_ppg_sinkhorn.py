@@ -779,7 +779,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             params = tf.compat.v1.trainable_variables()
             source_params = [p for p in params if "online" in p.name]
             target_params = [p for p in params if "target" in p.name]
-            soft_update(source_params, target_params, tau=1.)
+            soft_update(source_params, target_params, tau=0.97)
 
 
         assert nbatch % nminibatches == 0
@@ -830,7 +830,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         
         E_ppo = 1 #noptepochs
         E_clustering = 1 #Config.GOAL_EPOCHS
-        E_v = 1
+        E_MYOW = 0
+        E_v = 9
         
         N_BATCH_AUX = 32
 
@@ -883,7 +884,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 cluster_loss_res = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
 
         print('MYOW phase')
-        for _ in range(E_clustering):
+        for _ in range(E_MYOW):
             np.random.shuffle(rep_inds)
             inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
             for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
@@ -1011,7 +1012,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                         "%s/silhouette_score"%(Config.ENVIRONMENT):sil_score,
                         "%s/calinski_harabasz_score"%(Config.ENVIRONMENT):ch_score,
                         # '%s/value_i_loss'%(Config.ENVIRONMENT):value_i_loss,
-                        '%s/myow_loss'%(Config.ENVIRONMENT):myow_loss_res,
+                        '%s/myow_loss'%(Config.ENVIRONMENT):np.mean(myow_loss_res),
                         # '%s/mean_adv_ratio'%(Config.ENVIRONMENT):mean_adv_ratio,
                         # '%s/r_i_scale'%(Config.ENVIRONMENT):np.mean(r_i_scale),
                         "%s/custom_step"%(Config.ENVIRONMENT):step})
