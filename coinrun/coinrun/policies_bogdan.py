@@ -3,7 +3,7 @@ import tensorflow as tf
 from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch, lstm
 from baselines.common.distributions import make_pdtype, _matching_fc
 from baselines.common.input import observation_input
-from coinrun.ppo2_goal import sinkhorn
+from coinrun.ppo2_goal_bogdan import sinkhorn
 from coinrun.models import FiLM, TemporalBlock
 # TODO this is no longer supported in tfv2, so we'll need to
 # properly refactor where it's used if we want to use
