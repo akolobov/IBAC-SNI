@@ -41,30 +41,32 @@ from sklearn.metrics import silhouette_score
 
 # k: k parameter for K-nn
 def sinkhorn(scores, temp=0.1, k=3):
-	def remove_infs(x):
-		m = tf.math.reduce_max(x[tf.math.is_inf(x)])
-		casted_x = tf.cast(tf.ones_like(x, dtype=tf.dtypes.float32), tf.float32)
-		max_tensor = tf.math.multiply(casted_x, m)
-		return tf.where(tf.math.is_inf(x), max_tensor, x)
+    def remove_infs(x):
+        m = tf.math.reduce_max(x[tf.math.is_inf(x)])
+        casted_x = tf.cast(tf.ones_like(x, dtype=tf.dtypes.float32), tf.float32)
+        max_tensor = tf.math.multiply(casted_x, m)
+        return tf.where(tf.math.is_inf(x), max_tensor, x)
 
-	Q = scores / temp
-	Q -= tf.math.reduce_max(Q)
+    # set temperature through flag
+    temp = Config.TEMP
+    Q = scores / temp
+    Q -= tf.math.reduce_max(Q)
 
-	Q = tf.transpose(tf.math.exp(Q))
-	Q /= tf.math.reduce_sum(Q)
+    Q = tf.transpose(tf.math.exp(Q))
+    Q /= tf.math.reduce_sum(Q)
 
-	r = tf.ones(tf.shape(Q)[0]) / tf.cast(tf.shape(Q)[0], tf.float32)
-	c = tf.ones(tf.shape(Q)[1]) / tf.cast(tf.shape(Q)[1], tf.float32)
+    r = tf.ones(tf.shape(Q)[0]) / tf.cast(tf.shape(Q)[0], tf.float32)
+    c = tf.ones(tf.shape(Q)[1]) / tf.cast(tf.shape(Q)[1], tf.float32)
 
-	for it in range(k):
-		u = tf.reduce_sum(Q, axis=1)
-		u = tf.cast(u, tf.float32)
-		u = remove_infs(r / u)
-		Q = tf.cast(Q, tf.float32)
-		Q *= tf.expand_dims(u, axis=1)
-		Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
-	Q = Q / tf.math.reduce_sum(Q, axis=0, keepdims=True)
-	return tf.transpose(Q)
+    for it in range(k):
+        u = tf.reduce_sum(Q, axis=1)
+        u = tf.cast(u, tf.float32)
+        u = remove_infs(r / u)
+        Q = tf.cast(Q, tf.float32)
+        Q *= tf.expand_dims(u, axis=1)
+        Q *= tf.expand_dims((c / tf.math.reduce_sum(Q, axis=0)), axis=0)
+    Q = Q / tf.math.reduce_sum(Q, axis=0, keepdims=True)
+    return tf.transpose(Q)
 """
 Intrinsic advantage methods
 """

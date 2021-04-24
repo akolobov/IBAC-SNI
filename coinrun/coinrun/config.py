@@ -65,6 +65,9 @@ class ConfigSingle(object):
         bool_keys.append(('myow','myow'))
         # Sinkhorn consecutive timesteps
         type_keys.append(('cluster_t', 'cluster_t', int, 2))
+
+        # Tempterature parameter for sinkhorn
+        type_keys.append(('temp', 'temp', float, 0.1))
         ### Others:
         # Use hard cluster/code assignments for intrinsic reward
         bool_keys.append(('hgoal', 'hard_codes'))

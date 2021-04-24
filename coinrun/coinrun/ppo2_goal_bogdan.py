@@ -47,6 +47,8 @@ def sinkhorn(scores, temp=0.1, k=3):
         max_tensor = tf.math.multiply(casted_x, m)
         return tf.where(tf.math.is_inf(x), max_tensor, x)
 
+    # set temperature through flag
+    temp = Config.TEMP
     Q = scores / temp
     Q -= tf.math.reduce_max(Q)
 
@@ -361,7 +363,7 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / 0.1, axis=1)
+        p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / Config.TEMP, axis=1)
         proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
 
         if Config.MYOW:
