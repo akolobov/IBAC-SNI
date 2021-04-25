@@ -9,19 +9,19 @@ os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
 os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
 import wandb
 import time
-api = wandb.Api()
+import glob
 
-AGENTS = ["ppo_goal","ppo","ppo_diayn","ppg","ppo_goal_bogdan","ppo_goal_bogdan"]
-CLEAN_NAMES_AGENTS = ['Ours','PPO','PPO+DIAYN','PPG','Ours (PPG)']
+AGENTS = ["ppo_goal_bogdan","ppo","ppo_diayn","ppg","ppo_curl"]
+CLEAN_NAMES_AGENTS = ['Ours','PPO','PPO+DIAYN','PPG','PPO+CURL']
 
 agent2label = dict(zip(AGENTS,CLEAN_NAMES_AGENTS))
 
-def set_curve_attributes(params):
+def set_curve_attributes(agent):
         linewidth = 2
         linestyle = '-'
         do_not_plot = False
         marker = None
-        label = params['agent']['value']
+        label = agent
         if label == 'ppo_goal':
             col = 'red'
         elif label == 'ppo':
@@ -41,29 +41,28 @@ def set_curve_attributes(params):
         
         return label, col, linestyle, linewidth, marker, do_not_plot
 
-runs = api.runs("ssl_rl/procgen_generalization")
+files = glob.glob('wandb_data/*')
+
 df = []
-for i,run in enumerate(runs): 
-    params = json.loads(run.json_config)
-    if params['agent']['value'] not in AGENTS:
+for i,fh in enumerate(files): 
+    run_df = pd.read_csv(fh,index_col='custom_step').drop(['_step','Unnamed: 0'],1)
+    run_id = re.findall('(.*__[0-9]+__[0-9]+)',fh)[0].split('/')[1]
+    agent = '_'.join(fh.split(run_id)[1][1:].split('_')[:-1])
+
+    
+    if agent not in AGENTS:
         continue
-    if params['agent']['value'] == 'ppo_goal' and params['run_id']['value'] != 'ppo_split_sinkhornMYOW':
+    if agent == 'ppo_goal' and run_id != 'ppo_split_sinkhornMYOW':
         continue
-    label, col, linestyle, linewidth, marker, do_not_plot = set_curve_attributes(params)
-    run_df = run.history()
-    columns = run_df.columns
-    run_df.columns = [x.split('/')[-1] for x in columns]
-    # if params['agent']['value'] == 'ppo_goal':
-    #     import ipdb;ipdb.set_trace()
+    label, col, linestyle, linewidth, marker, do_not_plot = set_curve_attributes(agent)
 
     run_df['agent'] = label
-    run_df['env'] = params['environment']['value']
     run_df['col'] = col
     run_df['linestyle'] = linestyle
     run_df['UID'] = np.random.randint(1000000)
     df.append(run_df)
-    time.sleep(0.5)
 df=pd.concat(df)
+import ipdb;ipdb.set_trace()
 
 xlim = (0,25e6,5e6)
 
