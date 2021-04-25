@@ -113,5 +113,6 @@ results-procgen/
 openai*
 
 coinrun/wandb
+coinrun/coinrun/wandb_data
 
 wandb
