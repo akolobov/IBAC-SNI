@@ -6,3 +6,4 @@ saved_models/
 *.gif
 .idea/
 images_saliency/
+coinrun/wandb_data

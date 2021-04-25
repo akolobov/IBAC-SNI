@@ -11,7 +11,7 @@ import wandb
 import time
 api = wandb.Api()
 
-AGENTS = ["ppo_goal","ppo","ppo_diayn","ppg",'ppg_ssl']
+AGENTS = ["ppo_goal","ppo","ppo_diayn","ppg","ppo_goal_bogdan","ppo_goal_bogdan"]
 CLEAN_NAMES_AGENTS = ['Ours','PPO','PPO+DIAYN','PPG','Ours (PPG)']
 
 agent2label = dict(zip(AGENTS,CLEAN_NAMES_AGENTS))
