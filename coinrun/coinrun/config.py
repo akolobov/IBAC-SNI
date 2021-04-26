@@ -83,6 +83,9 @@ class ConfigSingle(object):
         # Bool for using the custom representation loss, if the flag is passed then the loss will be used
         bool_keys.append(('rep_loss', 'custom_rep_loss'))
 
+        # Bool for using joint RL + sinkhorn update
+        bool_keys.append(('skrl', 'joint_skrl'))
+
         # Weighting value for the custom representation loss
         type_keys.append(('rep_lambda', 'rep_loss_weight', float, 0))
 

@@ -32,7 +32,11 @@ print('Groups:')
 print(df['group'].unique())
 print('#######################')
 
-metrics = ['eprew','eprew_eval','silhouette_score']
+# metrics = ['eprew','eprew_eval','silhouette_score']
+metrics = ['silhouette_score']
+clean_metric = {'eprew':'Training reward',
+                'eprew_eval':'Evaluation reward',
+                'silhouette_score': 'Silhouette score'}
 
 X_LEFT = 0
 X_RIGHT = 8e6
@@ -62,7 +66,7 @@ def gradient(x, rfactors, gfactors, bfactors):
 def set_run_attributes(sub_df):
     T = float(sub_df['temp'].unique()[-1])
     label = 'T=%.1f' %(T)
-    col = gradient(T/5, rp, gp, bp)
+    col = gradient(T/2.5, rp, gp, bp)
     return label, col, '-'
 
 for metric in metrics:
@@ -104,7 +108,7 @@ for metric in metrics:
             mu = smooth_df_mu[metric].to_numpy()
             std = smooth_df_std[metric].to_numpy()
             ax.plot(x,mu,color=np.array(col)/255.,label=HP_LABEL,linestyle=linestyle,linewidth=2)
-            ax.fill_between(x, mu-std, mu+std, alpha=0.1, color=np.array(col)/255.)
+            # ax.fill_between(x, mu-std, mu+std, alpha=0.1, color=np.array(col)/255.)
             max_y = max(max_y,(mu).max())
             min_y = min(min_y,(mu).min())
 
@@ -127,15 +131,15 @@ for metric in metrics:
             pass
         ax.set_xlim(X_LEFT,X_RIGHT)
         
-        ax.set_title(env_name)
-        ax.set_xlabel('Timesteps (M)')
-        ax.set_ylabel('Average metric')
+        ax.set_title(env_name,fontweight="bold",fontsize=20)
+        ax.set_xlabel('Timesteps (M)',fontsize=17)
+        ax.set_ylabel(clean_metric[metric],fontsize=17)
 
         handles, labels = ax.get_legend_handles_labels()
 
 
     plt.tight_layout()
-    plt.legend(handles,labels, loc='lower left', bbox_to_anchor=(0.5,0.5),prop={'size': 15}) # new_handles, new_labels,
+    plt.legend(handles,labels, loc='lower left', bbox_to_anchor=(0.7,0.1),prop={'size': 15}) # new_handles, new_labels,
     
     plt.savefig(os.path.join('..','wandb_plots','A__ablation_hp_'+metric+'.png'),dpi=200)
 

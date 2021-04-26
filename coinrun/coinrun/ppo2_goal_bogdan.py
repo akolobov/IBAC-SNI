@@ -376,42 +376,57 @@ class Model(object):
 
         # joint sinkhorn+myow works bad
 
-        if Config.SYNC_FROM_ROOT:
-            trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
-            trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
-            trainer_myow = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
-        else:
-            trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         
-        self.opt = trainer
-        grads_and_var = trainer.compute_gradients(loss, params)
-        grads, var = zip(*grads_and_var)
-        if max_grad_norm is not None:
-            grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-        grads_and_var = list(zip(grads, var))
-        tot_norm = tf.zeros((1,))
-        for g,v in grads_and_var:
-            tot_norm += tf.norm(g)
-        tot_norm = tf.reshape(tot_norm, [])
-        _train = trainer.apply_gradients(grads_and_var)
+        if Config.JOINT_SKRL:
+            trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
+            aux_loss = proto_loss + myow_loss
+            loss =  pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + aux_loss*Config.REP_LOSS_WEIGHT
+            grads_and_var = trainer.compute_gradients(loss, params)
+            grads, var = zip(*grads_and_var)
+            if max_grad_norm is not None:
+                grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+            grads_and_var = list(zip(grads, var))
+            tot_norm = tf.zeros((1,))
+            for g,v in grads_and_var:
+                tot_norm += tf.norm(g)
+            tot_norm = tf.reshape(tot_norm, [])
+            _train = trainer.apply_gradients(grads_and_var)
+        else:
+            if Config.SYNC_FROM_ROOT:
+                trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
+                trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
+                trainer_myow = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
+            else:
+                trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
+
+            grads_and_var = trainer.compute_gradients(loss, params)
+            grads, var = zip(*grads_and_var)
+            if max_grad_norm is not None:
+                grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
+            grads_and_var = list(zip(grads, var))
+            tot_norm = tf.zeros((1,))
+            for g,v in grads_and_var:
+                tot_norm += tf.norm(g)
+            tot_norm = tf.reshape(tot_norm, [])
+            _train = trainer.apply_gradients(grads_and_var)
 
 
 
-        grads_and_var_aux = trainer_aux.compute_gradients(aux_loss, params)
-        grads_aux, var_aux = zip(*grads_and_var_aux)
-        if max_grad_norm is not None:
-            grads_aux, _grad_norm_aux = tf.clip_by_global_norm(grads_aux, max_grad_norm)
-        grads_and_var_aux = list(zip(grads_aux, var_aux))
-        _train_aux = trainer_aux.apply_gradients(grads_and_var_aux)
+            grads_and_var_aux = trainer_aux.compute_gradients(aux_loss, params)
+            grads_aux, var_aux = zip(*grads_and_var_aux)
+            if max_grad_norm is not None:
+                grads_aux, _grad_norm_aux = tf.clip_by_global_norm(grads_aux, max_grad_norm)
+            grads_and_var_aux = list(zip(grads_aux, var_aux))
+            _train_aux = trainer_aux.apply_gradients(grads_and_var_aux)
 
 
 
-        grads_and_var_myow = trainer_myow.compute_gradients(myow_loss, params)
-        grads_myow, var_myow = zip(*grads_and_var_myow)
-        if max_grad_norm is not None:
-            grads_myow, _grad_norm_myow = tf.clip_by_global_norm(grads_myow, max_grad_norm)
-        grads_and_var_myow = list(zip(grads_myow, var_myow))
-        _train_myow = trainer_myow.apply_gradients(grads_and_var_myow)
+            grads_and_var_myow = trainer_myow.compute_gradients(myow_loss, params)
+            grads_myow, var_myow = zip(*grads_and_var_myow)
+            if max_grad_norm is not None:
+                grads_myow, _grad_norm_myow = tf.clip_by_global_norm(grads_myow, max_grad_norm)
+            grads_and_var_myow = list(zip(grads_myow, var_myow))
+            _train_myow = trainer_myow.apply_gradients(grads_and_var_myow)
 
         
         
@@ -452,6 +467,11 @@ class Model(object):
                         [proto_loss, myow_loss, train_model.codes, _train_myow],
                         td_map
                     )[:-1]
+            elif train_target=='skrl':
+                return sess.run(
+                        [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, proto_loss, train_model.codes, train_model.R_I_SCALE, myow_loss, _train],
+                        td_map
+                    )[:-1], adv_ratio
             
         self.loss_names = ['policy_loss', 'value_loss', 'policy_entropy', 'approxkl_train', 'clipfrac_train', 'approxkl_run', 'clipfrac_run', 'l2_loss', 'info_loss_cv', 'value_i_loss', "cluster_loss","myow_loss", 'gradient_norm']
 
@@ -848,77 +868,101 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         myow_loss_res = 0.
         cluster_loss_res = 0.
         r_i_scale = 0.
-        print('Clustering phase')
-        for _ in range(E_clustering):
-            np.random.shuffle(rep_inds)
-            inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
-            for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
-                print('Minibatch clustering ',start)
-                sess.run([model.train_model.train_dropout_assign_ops])
-                end = min(start + N_BATCH_AUX, Config.NUM_STEPS)
-                mbinds = inds_2d[start:end]
-                slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
+        total_adv_ratio = 0.
 
-                obs_subsampled_cluster = sf01(repeat_first_el(rep_obs[:,representation_idx][mbinds],CLUSTER_T)) #rep_obs.reshape(-1,64,64,3)[mbinds]
-                act_subsampled_cluster = sf01(repeat_first_el(actions[:,representation_idx][mbinds],CLUSTER_T))
-                r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
-                v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
-                
-                # h_shape=sess.run([model.train_model.h_shape],{model.train_model.REP_PROC:obs_subsampled_cluster})
-                cluster_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
-                if BOLZTMANN_PROTO_SKILL_SELECTION:
-                    cluster_returns = np.zeros(Config.N_SKILLS)
-                    cluster_idx = mb_Q.argmax(1)
-                    for i in range(Config.N_SKILLS):
-                        cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
-                total_proto_ce_loss += proto_ce_loss
-        print('MYOW phase')
-        for _ in range(E_MYOW):
-            np.random.shuffle(rep_inds)
-            inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
-            for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
-                print('Minibatch MYOW ',start)
-                sess.run([model.train_model.train_dropout_assign_ops])
-                end = min(start + N_BATCH_AUX, Config.NUM_STEPS)
-                mbinds = inds_2d[start:end]
-                slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
-
-                obs_subsampled_cluster = sf01(repeat_first_el(rep_obs[:,representation_idx][mbinds],CLUSTER_T)) #rep_obs.reshape(-1,64,64,3)[mbinds]
-                act_subsampled_cluster = sf01(repeat_first_el(actions[:,representation_idx][mbinds],CLUSTER_T))
-                r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
-                v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
-
-                _, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
-
-        # compute proper intrinsic reward before PPO updates
-        if Config.INTRINSIC:
-            # compute log CE reward scaling
-            # scale_ce_i = np.log(1/total_proto_ce_loss + 1)
-            returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
+        if Config.JOINT_SKRL:
+            print('joint RL + Clustering phase')
+            E_ppo = 3
+            for _ in range(E_ppo):
+                np.random.shuffle(rl_inds)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                for start in range(0, rl_set_len, nbatch_train):
+                    print('Minibatch RL ',start)
+                    sess.run([model.train_model.train_dropout_assign_ops])
+                    end = min(start + nbatch_train, rl_set_len)
+                    mbinds = rl_inds[start:end]
+                    slices = (arr[mbinds] for arr in (sf01(rl_obs), sf01(returns[:,rl_idx]), sf01(returns_i[:,rl_idx]), sf01(masks[:,rl_idx]), sf01(actions[:,rl_idx]), sf01(values[:,rl_idx]), sf01(values_i[:,rl_idx]), sf01(skill[:,rl_idx]), sf01(neglogpacs[:,rl_idx])))
+                    # import ipdb;ipdb.set_trace()
+                    obs_subsampled_cluster = sf01(rl_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
+                    act_subsampled_cluster = actions[:,rl_idx].reshape(-1)[mbinds]
+                    r_cluster = returns[:,rl_idx].reshape(-1)[mbinds]
+                    v_cluster = values[:,rl_idx].reshape(-1)[mbinds]
+                    res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='skrl')
+                    total_adv_ratio += adv_ratio
+                    value_i_loss, cluster_loss_res, mb_Q, r_i_scale, myow_loss_res = res[-5:]
+                    mblossvals.append(res[:-4])
         else:
-            returns_i = np.zeros_like(returns)
-        
-        total_adv_ratio = 0
+            print('Clustering phase')
+            for _ in range(E_clustering):
+                np.random.shuffle(rep_inds)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
+                    print('Minibatch clustering ',start)
+                    sess.run([model.train_model.train_dropout_assign_ops])
+                    end = min(start + N_BATCH_AUX, Config.NUM_STEPS)
+                    mbinds = inds_2d[start:end]
+                    slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
 
-        print('RL phase')
-        for _ in range(E_ppo):
-            np.random.shuffle(rl_inds)
-            inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
-            for start in range(0, rl_set_len, nbatch_train):
-                print('Minibatch RL ',start)
-                sess.run([model.train_model.train_dropout_assign_ops])
-                end = min(start + nbatch_train, rl_set_len)
-                mbinds = rl_inds[start:end]
-                slices = (arr[mbinds] for arr in (sf01(rl_obs), sf01(returns[:,rl_idx]), sf01(returns_i[:,rl_idx]), sf01(masks[:,rl_idx]), sf01(actions[:,rl_idx]), sf01(values[:,rl_idx]), sf01(values_i[:,rl_idx]), sf01(skill[:,rl_idx]), sf01(neglogpacs[:,rl_idx])))
-                # import ipdb;ipdb.set_trace()
-                obs_subsampled_cluster = sf01(rl_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
-                act_subsampled_cluster = actions[:,rl_idx].reshape(-1)[mbinds]
-                r_cluster = returns[:,rl_idx].reshape(-1)[mbinds]
-                v_cluster = values[:,rl_idx].reshape(-1)[mbinds]
-                res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
-                total_adv_ratio += adv_ratio
-                value_i_loss, mb_Q = res[-2:]
-                mblossvals.append(res[:-1])
+                    obs_subsampled_cluster = sf01(repeat_first_el(rep_obs[:,representation_idx][mbinds],CLUSTER_T)) #rep_obs.reshape(-1,64,64,3)[mbinds]
+                    act_subsampled_cluster = sf01(repeat_first_el(actions[:,representation_idx][mbinds],CLUSTER_T))
+                    r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
+                    v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
+                    
+                    # h_shape=sess.run([model.train_model.h_shape],{model.train_model.REP_PROC:obs_subsampled_cluster})
+                    cluster_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
+                    if BOLZTMANN_PROTO_SKILL_SELECTION:
+                        cluster_returns = np.zeros(Config.N_SKILLS)
+                        cluster_idx = mb_Q.argmax(1)
+                        for i in range(Config.N_SKILLS):
+                            cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
+                    total_proto_ce_loss += proto_ce_loss
+            print('MYOW phase')
+            for _ in range(E_MYOW):
+                np.random.shuffle(rep_inds)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
+                    print('Minibatch MYOW ',start)
+                    sess.run([model.train_model.train_dropout_assign_ops])
+                    end = min(start + N_BATCH_AUX, Config.NUM_STEPS)
+                    mbinds = inds_2d[start:end]
+                    slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
+
+                    obs_subsampled_cluster = sf01(repeat_first_el(rep_obs[:,representation_idx][mbinds],CLUSTER_T)) #rep_obs.reshape(-1,64,64,3)[mbinds]
+                    act_subsampled_cluster = sf01(repeat_first_el(actions[:,representation_idx][mbinds],CLUSTER_T))
+                    r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
+                    v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
+
+                    _, myow_loss_res, mb_Q = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='myow')
+
+            # compute proper intrinsic reward before PPO updates
+            if Config.INTRINSIC:
+                # compute log CE reward scaling
+                # scale_ce_i = np.log(1/total_proto_ce_loss + 1)
+                returns_i = runner.compute_intrinsic_returns(rewards_i, values_i.reshape(-1, Config.NUM_ENVS), last_values_i, masks.reshape(-1, Config.NUM_ENVS)).reshape(-1, Config.NUM_ENVS)
+            else:
+                returns_i = np.zeros_like(returns)
+            
+            
+
+            print('RL phase')
+            for _ in range(E_ppo):
+                np.random.shuffle(rl_inds)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                for start in range(0, rl_set_len, nbatch_train):
+                    print('Minibatch RL ',start)
+                    sess.run([model.train_model.train_dropout_assign_ops])
+                    end = min(start + nbatch_train, rl_set_len)
+                    mbinds = rl_inds[start:end]
+                    slices = (arr[mbinds] for arr in (sf01(rl_obs), sf01(returns[:,rl_idx]), sf01(returns_i[:,rl_idx]), sf01(masks[:,rl_idx]), sf01(actions[:,rl_idx]), sf01(values[:,rl_idx]), sf01(values_i[:,rl_idx]), sf01(skill[:,rl_idx]), sf01(neglogpacs[:,rl_idx])))
+                    # import ipdb;ipdb.set_trace()
+                    obs_subsampled_cluster = sf01(rl_obs)[mbinds] #rep_obs.reshape(-1,64,64,3)[mbinds]
+                    act_subsampled_cluster = actions[:,rl_idx].reshape(-1)[mbinds]
+                    r_cluster = returns[:,rl_idx].reshape(-1)[mbinds]
+                    v_cluster = values[:,rl_idx].reshape(-1)[mbinds]
+                    res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='policy')
+                    total_adv_ratio += adv_ratio
+                    value_i_loss, mb_Q = res[-2:]
+                    mblossvals.append(res[:-1])
         
         # mean normalized advantage over PPO updates
         mean_adv_ratio = total_adv_ratio / (nminibatches * E_ppo)
@@ -937,6 +981,10 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         print('Logging phase')
         if update % log_interval == 0 or update == 1:
             step = update*nbatch
+            mpi_print('rep weight', Config.REP_LOSS_WEIGHT)
+            # stop udpating sinkhorn and myow halfway through training
+            if Config.JOINT_SKRL and step > int(5e6):
+                Config.REP_LOSS_WEIGHT = 0
             eval_rew_mean = utils.process_ep_buf(eval_active_ep_buf, tb_writer=tb_writer, suffix='_eval', step=step)
             rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
             ep_len_mean = np.nanmean([epinfo['l'] for epinfo in active_ep_buf])
