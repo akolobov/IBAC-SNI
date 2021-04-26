@@ -379,7 +379,7 @@ class Model(object):
         
         if Config.JOINT_SKRL:
             trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
-            aux_loss = proto_loss + myow_loss
+            aux_loss = proto_loss
             loss =  pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss + aux_loss*Config.REP_LOSS_WEIGHT
             grads_and_var = trainer.compute_gradients(loss, params)
             grads, var = zip(*grads_and_var)
@@ -469,7 +469,7 @@ class Model(object):
                     )[:-1]
             elif train_target=='skrl':
                 return sess.run(
-                        [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, proto_loss, train_model.codes, train_model.R_I_SCALE, myow_loss, _train],
+                        [pg_loss, vf_loss, entropy, approxkl_train, clipfrac_train, approxkl_run, clipfrac_run, l2_loss, info_loss, vf_loss_i, proto_loss, train_model.codes, train_model.R_I_SCALE, _train],
                         td_map
                     )[:-1], adv_ratio
             
@@ -889,8 +889,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                     v_cluster = values[:,rl_idx].reshape(-1)[mbinds]
                     res, adv_ratio = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='skrl')
                     total_adv_ratio += adv_ratio
-                    value_i_loss, cluster_loss_res, mb_Q, r_i_scale, myow_loss_res = res[-5:]
-                    mblossvals.append(res[:-4])
+                    value_i_loss, cluster_loss_res, mb_Q, r_i_scale = res[-4:]
+                    mblossvals.append(res[:-3])
         else:
             print('Clustering phase')
             for _ in range(E_clustering):
@@ -983,7 +983,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             step = update*nbatch
             mpi_print('rep weight', Config.REP_LOSS_WEIGHT)
             # stop udpating sinkhorn and myow halfway through training
-            if Config.JOINT_SKRL and step > int(5e6):
+            if Config.JOINT_SKRL and step > int(8e6):
                 Config.REP_LOSS_WEIGHT = 0
             eval_rew_mean = utils.process_ep_buf(eval_active_ep_buf, tb_writer=tb_writer, suffix='_eval', step=step)
             rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
