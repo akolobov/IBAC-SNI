@@ -394,8 +394,8 @@ class Model(object):
         else:
             if Config.SYNC_FROM_ROOT:
                 trainer = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
-                trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
-                trainer_myow = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=3e-3, epsilon=1e-5)
+                trainer_aux = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
+                trainer_myow = MpiAdamOptimizer(MPI.COMM_WORLD, learning_rate=LR, epsilon=1e-5)
             else:
                 trainer = tf.compat.v1.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
 

@@ -11,10 +11,11 @@ import glob
 
 from download_wandb_data import load_WandB_csvs
 
-AGENTS = ["ppo_goal_bogdan","ppo","ppo_curl","ppg",'ppo_diayn']
-CLEAN_NAMES_AGENTS = ['Ours',"PPO","PPO+CURL","DAAC",'PPO+DIAYN']
+AGENTS = ["ppo_goal","ppo",'ppo_diayn',"ppo_curl","ppg"]
+CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL","DAAC"]
 
-selected_run_ids = {'ppo_goal_bogdan':'(.*clean16envs.*)',
+selected_run_ids = {    'ppo_goal_bogdan':'(.*clean16envs.*)',
+                        'ppo_goal':'(.*sinkhornMYOW.*)',
                         'ppo':'.*',
                         'ppo_diayn':'.*',
                         'ppg':'.*',
@@ -35,7 +36,7 @@ print('#######################')
 metrics = ['eprew','eprew_eval','silhouette_score']
 
 X_LEFT = 0
-X_RIGHT = 25e6
+X_RIGHT = 8e6
 
 rp = [-1029.86559098,  2344.5778132 , -1033.38786418,  -487.3693808 ,
          298.50245209,   167.25393272]
@@ -59,31 +60,30 @@ def gradient(x, rfactors, gfactors, bfactors):
     return r, g, b
 
 
-def set_run_attributes(sub_df,agent):
+def set_run_attributes(agent):
     
     linewidth = 2
     linestyle = '-'
     do_not_plot = False
     marker = None
     label = agent
-    if label == 'ppo_goal' or label =='ppo_goal_bogdan':
+    if label == 'Ours':
         col = 'red'
-    elif label == 'ppo':
+    elif label == 'PPO':
         col = 'limegreen'
         linestyle = '--'
-    elif label == 'ppo_diayn':
+    elif label == 'PPO+DIAYN':
         col = 'fuchsia'
         linestyle = '--'
-    elif label == 'ppg':
+    elif label == 'DAAC':
         col = 'orange'
         linestyle = '--'
-    elif label == 'ppo_curl':
+    elif label == 'PPO+CURL':
         col = 'coral'
         linestyle = '-'
     
 
-    label = agent2label[label]
-    
+    # label = agent2label[label]
     return label, col, linestyle, linewidth, marker
 
 xlim = (0,25e6,5e6)
@@ -93,7 +93,7 @@ table_eval = r"""
 \centering
 \caption{Average eval returns collected after 25M of training frames, $\pm$ one standard deviation.}
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{l||l|ll}
+\begin{tabular}{l||l|llll}
 \toprule
 """
 table_train = r"""
@@ -101,7 +101,7 @@ table_train = r"""
 \centering
 \caption{Average train returns collected after 25M of training frames, $\pm$ one standard deviation.}
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{l||l|ll}
+\begin{tabular}{l||l|llll}
 \toprule
 """
 table_eval += "Env & " + ' & '.join(CLEAN_NAMES_AGENTS) +'\\\\ \n'
@@ -110,7 +110,7 @@ reported_scores_eval = np.zeros((16,len(CLEAN_NAMES_AGENTS)))
 table_train += "Env & " + ' & '.join(CLEAN_NAMES_AGENTS) +'\\\\ \n'
 reported_scores_train = np.zeros((16,len(CLEAN_NAMES_AGENTS)))
 
-metrics = ['eprew_eval'] # ,'eprew'
+metrics = ['eprew_eval','eprew']
 
 for metric in metrics:
     games_list = sorted(df['environment'].unique())
@@ -143,15 +143,25 @@ for metric in metrics:
         for agent,group_df in game_df.groupby('agent'):
             # agent = group_df['agent'].unique().item()
             print(env_name,agent)
-            group_df[metric] = group_df[metric].ewm(30).mean()
-            smooth_df_mu = group_df.groupby('custom_step').apply(np.mean)
-            smooth_df_std = group_df.groupby('custom_step').apply(np.std)
-
-            label, col, linestyle, linewidth, marker = set_run_attributes(smooth_df_mu,agent)
+            group_df[metric] = group_df[metric].ewm(20).mean()
             
-            x = smooth_df_mu.index.to_numpy()
-            mu = smooth_df_mu[metric].to_numpy()
-            std = smooth_df_std[metric].to_numpy()
+            smallest_t =  group_df.groupby('UID').apply(len).min()
+            acc = np.zeros((len(group_df['UID'].unique()),smallest_t))
+            for i,seed in enumerate(group_df['UID'].unique()):
+                seed_df=group_df[group_df['UID']==seed].iloc[:smallest_t].reset_index()
+                x = seed_df['custom_step'].to_numpy()
+                acc[i] = seed_df[metric].to_numpy()
+
+            mu = acc.mean(0)
+            std = acc.std(0)
+            # smooth_df_mu = group_df.groupby('custom_step').apply(np.mean)
+            # smooth_df_std = group_df.groupby('custom_step').apply(np.std)
+
+            label, col, linestyle, linewidth, marker = set_run_attributes(agent)
+            
+            # x = smooth_df_mu.index.to_numpy()
+            # mu = smooth_df_mu[metric].to_numpy()
+            # std = smooth_df_std[metric].to_numpy()
             ax.plot(x,mu,color=col,label=label,linestyle=linestyle,linewidth=2)
             ax.fill_between(x, mu-std, mu+std, alpha=0.1, color=col)
             max_y = max(max_y,(mu).max())
@@ -208,8 +218,9 @@ for metric in metrics:
             table_train += row_str_train
 
 
+    
+    plt.legend(handles,labels, loc='upper center', bbox_to_anchor=(-1.5, -0.2),fancybox=False, shadow=False,prop={'size': 15},ncol=len(handles)) # new_handles, new_labels,
     plt.tight_layout()
-    plt.legend(handles,labels, loc='lower left', bbox_to_anchor=(0.5,0.5),prop={'size': 15}) # new_handles, new_labels,
     
     plt.savefig(os.path.join('..','wandb_plots','B__main_results_'+metric+'.png'),dpi=200)
 
@@ -238,4 +249,4 @@ table_train += r"""
 """
 print(table_eval)
 # print(table_train)
-import ipdb;ipdb.set_trace()
+# import ipdb;ipdb.set_trace()

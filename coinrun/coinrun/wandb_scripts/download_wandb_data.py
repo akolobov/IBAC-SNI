@@ -46,10 +46,20 @@ def load_WandB_csvs(files,params_to_load,selected_run_ids,AGENTS,agent2label):
         except:
             print('Skipping malformated CSV')
             continue
-        run_id, agent = fh.split('/')[2].split('___')
-        agent = agent.split('.')[0]
-        group = '__'.join(run_id.split('__')[:-1])
-
+        with open(fh[:-4]+'.json','r') as json_fh:
+            params = json.load(json_fh)
+            for p in params_to_load:
+                if p not in params:
+                    params[p] = {}
+                    params[p]['value'] = 1
+                run_df[p] = params[p]['value']
+                
+        run_id_fn, agent_fn = fh.split('/')[2].split('___')
+        run_id = params['run_id']['value']
+        agent = params['agent']['value']
+        agent_fn = agent.split('.')[0]
+        group = '__'.join(run_id_fn.split('__')[:-1])
+        
         if agent not in AGENTS:
             continue
         
@@ -62,14 +72,6 @@ def load_WandB_csvs(files,params_to_load,selected_run_ids,AGENTS,agent2label):
         run_df['linestyle'] = linestyle
         run_df['UID'] = np.random.randint(1000000)
         run_df['group'] = group
-
-        with open(fh[:-4]+'.json','r') as json_fh:
-            params = json.load(json_fh)
-            for p in params_to_load:
-                if p not in params:
-                    params[p] = {}
-                    params[p]['value'] = 1
-                run_df[p] = params[p]['value']
                 
         df.append(run_df)
     df=pd.concat(df)
@@ -79,7 +81,7 @@ if __name__ == "__main__":
 
     api = wandb.Api()
 
-    AGENTS = ["ppo_goal_bogdan","ppo","ppo_diayn","ppg",'ppo_curl']
+    AGENTS = ["ppo_goal_bogdan",'ppo_goal',"ppo","ppo_diayn","ppg",'ppo_curl']
 
     METRICS = ['custom_step','eprew','eprew_eval','silhouette_score']
 
