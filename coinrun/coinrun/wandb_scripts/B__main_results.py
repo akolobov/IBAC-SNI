@@ -11,10 +11,10 @@ import glob
 
 from download_wandb_data import load_WandB_csvs
 
-AGENTS = ["ppo_goal_bogdan"]
-CLEAN_NAMES_AGENTS = ['Ours']
+AGENTS = ["ppo_goal_bogdan","ppo","ppo_curl","ppg",'ppo_diayn']
+CLEAN_NAMES_AGENTS = ['Ours',"PPO","PPO+CURL","PPG",'PPO+DIAYN']
 
-selected_run_ids = {'ppo_goal_bogdan':'(.*smarterMYOW__5__3__.*)',
+selected_run_ids = {'ppo_goal_bogdan':'(.*clean16envs.*)',
                         'ppo':'.*',
                         'ppo_diayn':'.*',
                         'ppg':'.*',
@@ -59,11 +59,32 @@ def gradient(x, rfactors, gfactors, bfactors):
     return r, g, b
 
 
-def set_run_attributes(sub_df):
-    T = float(sub_df['temp'].unique()[-1])
-    label = 'T=%.1f' %(T)
-    col = gradient(T/10, rp, gp, bp)
-    return label, col, '-'
+def set_run_attributes(sub_df,agent):
+    
+    linewidth = 2
+    linestyle = '-'
+    do_not_plot = False
+    marker = None
+    label = agent
+    if label == 'ppo_goal' or label =='ppo_goal_bogdan':
+        col = 'red'
+    elif label == 'ppo':
+        col = 'limegreen'
+        linestyle = '--'
+    elif label == 'ppo_diayn':
+        col = 'fuchsia'
+        linestyle = '--'
+    elif label == 'ppg':
+        col = 'orange'
+        linestyle = '--'
+    elif label == 'ppo_curl':
+        col = 'coral'
+        linestyle = '-'
+    
+
+    label = agent2label[label]
+    
+    return label, col, linestyle, linewidth, marker
 
 xlim = (0,25e6,5e6)
 
@@ -89,7 +110,7 @@ reported_scores_eval = np.zeros((16,len(CLEAN_NAMES_AGENTS)))
 table_train += "Env & " + ' & '.join(CLEAN_NAMES_AGENTS) +'\\\\ \n'
 reported_scores_train = np.zeros((16,len(CLEAN_NAMES_AGENTS)))
 
-metrics = ['eprew','eprew_eval']
+metrics = ['eprew_eval'] # ,'eprew'
 
 for metric in metrics:
     games_list = sorted(df['environment'].unique())
@@ -118,35 +139,41 @@ for metric in metrics:
         
         game_df = df[df['environment']==env_name]
         
-        for group_name,group_df in game_df.groupby('group'):
-
+        methods_results = {}
+        for agent,group_df in game_df.groupby('agent'):
+            # agent = group_df['agent'].unique().item()
+            print(env_name,agent)
             group_df[metric] = group_df[metric].ewm(30).mean()
             smooth_df_mu = group_df.groupby('custom_step').apply(np.mean)
             smooth_df_std = group_df.groupby('custom_step').apply(np.std)
 
-            HP_LABEL, col, linestyle = set_run_attributes(smooth_df_mu)
+            label, col, linestyle, linewidth, marker = set_run_attributes(smooth_df_mu,agent)
             
             x = smooth_df_mu.index.to_numpy()
             mu = smooth_df_mu[metric].to_numpy()
             std = smooth_df_std[metric].to_numpy()
-            ax.plot(x,mu,color=np.array(col)/255.,label=HP_LABEL,linestyle=linestyle,linewidth=2)
-            ax.fill_between(x, mu-std, mu+std, alpha=0.1, color=np.array(col)/255.)
+            ax.plot(x,mu,color=col,label=label,linestyle=linestyle,linewidth=2)
+            ax.fill_between(x, mu-std, mu+std, alpha=0.1, color=col)
             max_y = max(max_y,(mu).max())
             min_y = min(min_y,(mu).min())
 
-            start_idx = np.max(np.where(x<X_RIGHT)[0])
+            start_idx = np.max(np.where(np.logical_and(X_RIGHT-1e6<x,x<X_RIGHT))[0])
             # start_idx = len(mu)-10
             best_idx = mu[:start_idx].argmax()#+start_idx
-
+            methods_results[label] = (mu[best_idx],std[best_idx])
+            
+        a_idx = 0
+        for agent in CLEAN_NAMES_AGENTS:
             if metric == 'eprew_eval':
-                row_str_eval += '& %.1f$\pm$%.1f ' % (mu[best_idx],std[best_idx])
+                row_str_eval += '& %.1f$\pm$%.1f ' % methods_results[agent]
             if metric == 'eprew':
-                row_str_train += '& %.1f$\pm$%.1f ' % (mu[best_idx],std[best_idx])
+                row_str_train += '& %.1f$\pm$%.1f ' % methods_results[agent]
             # add best score to table of scores for normalized absolute score computation
             if metric == 'eprew_eval':
-                reported_scores_eval[e_idx,a_idx] = mu[best_idx]
+                reported_scores_eval[e_idx,a_idx] = methods_results[agent][0]
             if metric == 'eprew':
-                reported_scores_train[e_idx,a_idx] = mu[best_idx]
+                reported_scores_train[e_idx,a_idx] = methods_results[agent][0]
+            a_idx += 1
 
         major_ticks = np.arange(X_LEFT, X_RIGHT, 1e6)
 
@@ -210,3 +237,4 @@ table_train += r"""
 """
 print(table_eval)
 # print(table_train)
+import ipdb;ipdb.set_trace()

@@ -12,30 +12,30 @@ import time
 import re
 
 def set_curve_attributes(agent,agent2label):
-        linewidth = 2
+    linewidth = 2
+    linestyle = '-'
+    do_not_plot = False
+    marker = None
+    label = agent
+    if label == 'ppo_goal' or label =='ppo_goal_bogdan':
+        col = 'red'
+    elif label == 'ppo':
+        col = 'limegreen'
+        linestyle = '--'
+    elif label == 'ppo_diayn':
+        col = 'fuchsia'
+        linestyle = '--'
+    elif label == 'ppg':
+        col = 'orange'
+        linestyle = '--'
+    elif label == 'ppo_curl':
+        col = 'coral'
         linestyle = '-'
-        do_not_plot = False
-        marker = None
-        label = agent
-        if label == 'ppo_goal' or label =='ppo_goal_bogdan':
-            col = 'red'
-        elif label == 'ppo':
-            col = 'limegreen'
-            linestyle = '--'
-        elif label == 'ppo_diayn':
-            col = 'fuchsia'
-            linestyle = '--'
-        elif label == 'ppg':
-            col = 'orange'
-            linestyle = '--'
-        elif label == 'ppo_curl':
-            col = 'coral'
-            linestyle = '-'
-        
+    
 
-        label = agent2label[label]
-        
-        return label, col, linestyle, linewidth, marker, do_not_plot
+    label = agent2label[label]
+    
+    return label, col, linestyle, linewidth, marker, do_not_plot
 
 
 def load_WandB_csvs(files,params_to_load,selected_run_ids,AGENTS,agent2label):
@@ -103,7 +103,7 @@ if __name__ == "__main__":
 
         filename = '%s___%s' % (run.name,agent)
 
-        run_df.to_csv(os.path.join('wandb_data',filename+'.csv'))
+        run_df.to_csv(os.path.join('..','wandb_data',filename+'.csv'))
 
         with open(os.path.join('..','wandb_data',filename+'.json'), 'w') as f:
             json.dump(params, f)
