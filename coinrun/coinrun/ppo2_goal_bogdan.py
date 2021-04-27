@@ -1050,17 +1050,17 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             #     final_mosaic = np.block([[[x] for x in row] for row in img_block])
             #     wandb.log({"%s/cluster_samples_%d"%(Config.ENVIRONMENT,step): [wandb.Image(final_mosaic, caption="8 samples / cluster for 10 largest clusters (%d)"%(step))]})
 
+    # stop saving models for now
+        # if can_save:
+        #     if save_interval and (update % save_interval == 0):
+        #         save_model()
 
-        if can_save:
-            if save_interval and (update % save_interval == 0):
-                save_model()
-
-            for j, checkpoint in enumerate(checkpoints):
-                if (not saved_key_checkpoints[j]) and (step >= (checkpoint * 1e6)):
-                    saved_key_checkpoints[j] = True
-                    save_model(str(checkpoint) + 'M')
-
-    save_model()
+        #     for j, checkpoint in enumerate(checkpoints):
+        #         if (not saved_key_checkpoints[j]) and (step >= (checkpoint * 1e6)):
+        #             saved_key_checkpoints[j] = True
+        #             save_model(str(checkpoint) + 'M')
+    # stop saving models for now
+    #save_model()
 
     env.close()
     return mean_rewards
