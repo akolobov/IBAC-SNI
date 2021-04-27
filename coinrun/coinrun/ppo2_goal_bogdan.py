@@ -365,6 +365,7 @@ class Model(object):
 
         p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / Config.TEMP, axis=1)
         proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
+        proto_loss_no_stopgrad = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(train_model.codes * p_t, axis=1))
 
         if Config.MYOW:
             myow_loss = train_model.myow_loss
@@ -372,7 +373,7 @@ class Model(object):
             myow_loss = tf.reduce_mean(tf.zeros(1))
 
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
-        aux_loss =  proto_loss #+ vf_loss_i*vf_coef 
+        aux_loss =  proto_loss_no_stopgrad + myow_loss #+ vf_loss_i*vf_coef 
 
         # joint sinkhorn+myow works bad
 
@@ -459,7 +460,7 @@ class Model(object):
                     )[:-1], adv_ratio
             elif train_target=='clustering':
                 return sess.run(
-                        [proto_loss, train_model.codes, proto_loss,train_model.R_I_SCALE, _train_aux],
+                        [proto_loss, myow_loss, train_model.codes, _train_aux],
                         td_map
                     )[:-1]
             elif train_target=='myow':
@@ -784,7 +785,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             params = tf.compat.v1.trainable_variables()
             source_params = [p for p in params if "online" in p.name]
             target_params = [p for p in params if "target" in p.name]
-            soft_update(source_params, target_params, tau=0.95)
+            soft_update(source_params, target_params, tau=0.97)
 
 
         assert nbatch % nminibatches == 0
@@ -835,7 +836,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         
         E_ppo = 1 #noptepochs
         E_clustering = 1 #Config.GOAL_EPOCHS
-        E_MYOW = 1
+        E_MYOW = 0
         
         N_BATCH_AUX = 32
 
@@ -909,13 +910,13 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                     v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
                     
                     # h_shape=sess.run([model.train_model.h_shape],{model.train_model.REP_PROC:obs_subsampled_cluster})
-                    cluster_loss_res, mb_Q, proto_ce_loss, r_i_scale = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
+                    cluster_loss_res, myow_loss_res, mb_Q, = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
                     if BOLZTMANN_PROTO_SKILL_SELECTION:
                         cluster_returns = np.zeros(Config.N_SKILLS)
                         cluster_idx = mb_Q.argmax(1)
                         for i in range(Config.N_SKILLS):
                             cluster_returns[i] = np.mean( v_cluster.reshape(-1)* (cluster_idx==i)*1 )
-                    total_proto_ce_loss += proto_ce_loss
+                    # total_proto_ce_loss += proto_ce_loss
             print('MYOW phase')
             for _ in range(E_MYOW):
                 np.random.shuffle(rep_inds)
