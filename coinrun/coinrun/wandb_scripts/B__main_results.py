@@ -12,7 +12,7 @@ import glob
 from download_wandb_data import load_WandB_csvs
 
 AGENTS = ["ppo_goal_bogdan","ppo","ppo_curl","ppg",'ppo_diayn']
-CLEAN_NAMES_AGENTS = ['Ours',"PPO","PPO+CURL","PPG",'PPO+DIAYN']
+CLEAN_NAMES_AGENTS = ['Ours',"PPO","PPO+CURL","DAAC",'PPO+DIAYN']
 
 selected_run_ids = {'ppo_goal_bogdan':'(.*clean16envs.*)',
                         'ppo':'.*',
@@ -35,7 +35,7 @@ print('#######################')
 metrics = ['eprew','eprew_eval','silhouette_score']
 
 X_LEFT = 0
-X_RIGHT = 8e6
+X_RIGHT = 25e6
 
 rp = [-1029.86559098,  2344.5778132 , -1033.38786418,  -487.3693808 ,
          298.50245209,   167.25393272]
@@ -157,7 +157,8 @@ for metric in metrics:
             max_y = max(max_y,(mu).max())
             min_y = min(min_y,(mu).min())
 
-            start_idx = np.max(np.where(np.logical_and(X_RIGHT-1e6<x,x<X_RIGHT))[0])
+            left_side = min(x.max()-1e6,X_RIGHT-1e6)
+            start_idx = np.max(np.where(np.logical_and(left_side<x,x<X_RIGHT))[0])
             # start_idx = len(mu)-10
             best_idx = mu[:start_idx].argmax()#+start_idx
             methods_results[label] = (mu[best_idx],std[best_idx])
