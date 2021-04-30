@@ -256,8 +256,6 @@ class CnnPolicy(object):
 
         
         if Config.MYOW:
-
-
             """
             MYOW where k-NN neighbors are replaced by Sinkhorn clusters
             """
@@ -314,7 +312,7 @@ class CnnPolicy(object):
                 nearby_batch_vecs = tf.reshape(tf.gather(cluster_membership_list,tf.cast(nearby_cluster_idx,tf.int32)),(-1,))
                 N_target = tf.gather(y_target, nearby_batch_vecs)
                 v_target = v_target_net(N_target)
-                r_target = r_target_net(v_target)
+                # r_target = r_target_net(v_target)
 
                 self.myow_loss += tf.reduce_mean(cos_loss(r_online, v_target)) #+ tf.reduce_mean(cos_loss(r_target, v_online))
 

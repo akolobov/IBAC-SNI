@@ -11,11 +11,11 @@ import glob
 
 from download_wandb_data import load_WandB_csvs
 
-AGENTS = ["ppo_goal","ppo",'ppo_diayn',"ppo_curl","ppg"]
-CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL","DAAC"]
+AGENTS = ["ppo_goal_bogdan","ppo",'ppo_diayn',"ppo_curl",'ppo_skrl',"ppg"]
+CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL",'PPO+Sinkhorn',"DAAC"]
 
-selected_run_ids = {    'ppo_goal_bogdan':'(.*clean16envs.*)',
-                        'ppo_goal':'(.*sinkhornMYOW.*)',
+selected_run_ids = {    'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)',
+                        'ppo_goal':'(.*jointSKMYOW__20__3.*)',
                         'ppo':'.*',
                         'ppo_diayn':'.*',
                         'ppg':'.*',
@@ -27,16 +27,21 @@ files = glob.glob('../wandb_data/*.csv')
 params_to_load = ['agent','n_skills','n_knn','cluster_t','temp','environment']
 
 df = load_WandB_csvs(files,params_to_load,selected_run_ids,AGENTS,agent2label)
+df.loc[df['group'].apply(lambda x: 'skrl' in x),'agent'] = 'PPO+Sinkhorn'
 
 print('#######################')
 print('Groups:')
 print(df['group'].unique())
 print('#######################')
 
-metrics = ['eprew','eprew_eval','silhouette_score']
+# metrics = ['eprew','eprew_eval','silhouette_score']
+
+metrics = ['eprew_eval'] # ,'eprew'
 
 X_LEFT = 0
 X_RIGHT = 8e6
+REGION = 1e6
+EMA = 20
 
 rp = [-1029.86559098,  2344.5778132 , -1033.38786418,  -487.3693808 ,
          298.50245209,   167.25393272]
@@ -71,22 +76,24 @@ def set_run_attributes(agent):
         col = 'red'
     elif label == 'PPO':
         col = 'limegreen'
-        linestyle = '--'
+        linestyle = '-'
     elif label == 'PPO+DIAYN':
         col = 'fuchsia'
-        linestyle = '--'
+        linestyle = '-'
     elif label == 'DAAC':
         col = 'orange'
-        linestyle = '--'
+        linestyle = '-'
     elif label == 'PPO+CURL':
         col = 'coral'
+        linestyle = '-'
+    elif label == 'PPO+Sinkhorn':
+        col = 'cyan'
         linestyle = '-'
     
 
     # label = agent2label[label]
     return label, col, linestyle, linewidth, marker
 
-xlim = (0,25e6,5e6)
 
 table_eval = r"""
 \begin{table}[ht]
@@ -109,8 +116,6 @@ reported_scores_eval = np.zeros((16,len(CLEAN_NAMES_AGENTS)))
 
 table_train += "Env & " + ' & '.join(CLEAN_NAMES_AGENTS) +'\\\\ \n'
 reported_scores_train = np.zeros((16,len(CLEAN_NAMES_AGENTS)))
-
-metrics = ['eprew_eval','eprew']
 
 for metric in metrics:
     games_list = sorted(df['environment'].unique())
@@ -143,7 +148,7 @@ for metric in metrics:
         for agent,group_df in game_df.groupby('agent'):
             # agent = group_df['agent'].unique().item()
             print(env_name,agent)
-            group_df[metric] = group_df[metric].ewm(20).mean()
+            group_df[metric] = group_df[metric].ewm(EMA).mean()
             
             smallest_t =  group_df.groupby('UID').apply(len).min()
             acc = np.zeros((len(group_df['UID'].unique()),smallest_t))
@@ -167,10 +172,11 @@ for metric in metrics:
             max_y = max(max_y,(mu).max())
             min_y = min(min_y,(mu).min())
 
-            left_side = min(x.max()-1e6,X_RIGHT-1e6)
-            start_idx = np.max(np.where(np.logical_and(left_side<x,x<X_RIGHT))[0])
+            left_side = min(x.max()-REGION,X_RIGHT-REGION)
+            start_idx = np.min(np.where(np.logical_and(left_side<x,x<X_RIGHT))[0])
+            end_idx = np.max(np.where(np.logical_and(left_side<x,x<X_RIGHT))[0])
             # start_idx = len(mu)-10
-            best_idx = mu[:start_idx].argmax()#+start_idx
+            best_idx = mu[start_idx:end_idx].argmax()+start_idx
             methods_results[label] = (mu[best_idx],std[best_idx])
             
         a_idx = 0
@@ -186,13 +192,16 @@ for metric in metrics:
                 reported_scores_train[e_idx,a_idx] = methods_results[agent][0]
             a_idx += 1
 
-        major_ticks = np.arange(X_LEFT, X_RIGHT, 1e6)
+        major_ticks = np.arange(X_LEFT, X_RIGHT+100, 1e6)
 
-        ax.set_xticks(major_ticks)
+        if (row_idx == 3 and e_idx != 11) or e_idx == 15:
+            ax.set_xticks(major_ticks)
+        else:
+            ax.set_xticks([])
         
         ticks_x = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x/1e6))
         ax.xaxis.set_major_formatter(ticks_x)
-
+        
         for tick in ax.xaxis.get_major_ticks():
             tick.label.set_fontsize(15) 
         for tick in ax.yaxis.get_major_ticks():
@@ -205,8 +214,13 @@ for metric in metrics:
         ax.set_xlim(X_LEFT,X_RIGHT)
         
         ax.set_title(env_name)
-        ax.set_xlabel('Timesteps (M)')
-        ax.set_ylabel('Average metric')
+        if (row_idx == 3 and e_idx != 11) or e_idx == 15:
+            ax.set_xlabel('Timesteps (M)')
+        if col_idx == 1:
+            if metric == 'eprew_eval':
+                ax.set_ylabel('Average test reward')
+            if metric == 'eprew':
+                ax.set_ylabel('Average train reward')
 
         handles, labels = ax.get_legend_handles_labels()
 
@@ -216,7 +230,7 @@ for metric in metrics:
         if metric == 'eprew':
             row_str_train += '\\\\ \n'
             table_train += row_str_train
-
+        # plt.tight_layout()
 
     
     plt.legend(handles,labels, loc='upper center', bbox_to_anchor=(-1.5, -0.2),fancybox=False, shadow=False,prop={'size': 15},ncol=len(handles)) # new_handles, new_labels,
@@ -249,4 +263,3 @@ table_train += r"""
 """
 print(table_eval)
 # print(table_train)
-# import ipdb;ipdb.set_trace()

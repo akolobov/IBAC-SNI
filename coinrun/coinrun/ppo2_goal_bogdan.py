@@ -363,7 +363,7 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos) / Config.TEMP, axis=1)
+        p_t = tf.nn.log_softmax(tf.linalg.matmul(tf.linalg.normalize(train_model.u_t, axis=1, ord='euclidean')[0], train_model.protos) / Config.TEMP, axis=1)
         proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
         proto_loss_no_stopgrad = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(train_model.codes * p_t, axis=1))
 
@@ -374,8 +374,6 @@ class Model(object):
 
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
         aux_loss =  proto_loss_no_stopgrad + myow_loss #+ vf_loss_i*vf_coef 
-
-        # joint sinkhorn+myow works bad
 
         
         if Config.JOINT_SKRL:
