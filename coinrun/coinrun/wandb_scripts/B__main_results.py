@@ -14,7 +14,10 @@ from download_wandb_data import load_WandB_csvs
 AGENTS = ["ppo_goal_bogdan","ppo",'ppo_diayn',"ppo_curl",'ppo_skrl',"ppg"]
 CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL",'PPO+Sinkhorn',"DAAC"]
 
-selected_run_ids = {    'ppo_goal_bogdan':'(.*Apr30_normUt__10__3__0.300000__200.*)|(.*skrl.*)', # jointSKMYOW__2__3__0.300000__200
+selected_run_ids = {    
+                        # 'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)', 
+                        # 'ppo_goal_bogdan':'(.*normUt__2__3__0.500000__200.*)|(.*skrl.*)',
+                        'ppo_goal_bogdan':'(.*meta.*)|(.*skrl.*)',
                         'ppo_goal':'.*',
                         'ppo':'.*',
                         'ppo_diayn':'.*',

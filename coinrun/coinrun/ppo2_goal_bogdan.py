@@ -894,14 +894,14 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             print('Clustering phase')
             for _ in range(E_clustering):
                 np.random.shuffle(rep_inds)
-                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                # inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                inds_2d = np.arange(Config.NUM_STEPS)
                 for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
                     print('Minibatch clustering ',start)
                     sess.run([model.train_model.train_dropout_assign_ops])
                     end = min(start + N_BATCH_AUX, Config.NUM_STEPS)
                     mbinds = inds_2d[start:end]
                     slices = (arr[mbinds] for arr in (sf01(rep_obs), sf01(returns[:,representation_idx]), sf01(returns_i[:,representation_idx]), sf01(masks[:,representation_idx]), sf01(actions[:,representation_idx]), sf01(values[:,representation_idx]), sf01(values_i[:,representation_idx]), sf01(skill[:,representation_idx]), sf01(neglogpacs[:,representation_idx])))
-
                     obs_subsampled_cluster = sf01(repeat_first_el(rep_obs[:,representation_idx][mbinds],CLUSTER_T)) #rep_obs.reshape(-1,64,64,3)[mbinds]
                     act_subsampled_cluster = sf01(repeat_first_el(actions[:,representation_idx][mbinds],CLUSTER_T))
                     r_cluster = returns[:,representation_idx].reshape(-1)[mbinds]
@@ -918,7 +918,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             print('MYOW phase')
             for _ in range(E_MYOW):
                 np.random.shuffle(rep_inds)
-                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                # inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                inds_2d = np.arange(Config.NUM_STEPS)
                 for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
                     print('Minibatch MYOW ',start)
                     sess.run([model.train_model.train_dropout_assign_ops])
