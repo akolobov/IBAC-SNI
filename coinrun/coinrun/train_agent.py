@@ -313,7 +313,7 @@ def main():
     if Config.LONG_TRAINING:
         total_timesteps = int(200e6)
     elif Config.SHORT_TRAINING:
-        total_timesteps = int(25e6)
+        total_timesteps = int(8e6)
     elif Config.VERY_SHORT_TRAINING:
         total_timesteps = int(5e6)
     save_interval = args.save_interval
