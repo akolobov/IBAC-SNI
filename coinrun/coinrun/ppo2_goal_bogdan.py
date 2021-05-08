@@ -783,7 +783,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             params = tf.compat.v1.trainable_variables()
             source_params = [p for p in params if "online" in p.name]
             target_params = [p for p in params if "target" in p.name]
-            soft_update(source_params, target_params, tau=1)
+            soft_update(source_params, target_params, tau=0.95)
 
 
         assert nbatch % nminibatches == 0
