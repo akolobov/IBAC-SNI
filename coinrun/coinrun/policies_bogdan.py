@@ -251,7 +251,9 @@ class CnnPolicy(object):
             
         self.z_t_1 = self.z_t
         # scores: n_batch x n_clusters
-        scores = tf.linalg.matmul(tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0], tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0])
+        # tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
+        # tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0]
+        scores = tf.linalg.matmul(self.z_t_1, self.protos)
         self.codes = sinkhorn(scores=scores)
 
         
