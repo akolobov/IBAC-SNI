@@ -363,7 +363,7 @@ class Model(object):
         assert len(info_loss) == 1
         info_loss = info_loss[0]
 
-        p_t = tf.nn.log_softmax(tf.linalg.matmul(tf.linalg.normalize(train_model.u_t, axis=1, ord='euclidean')[0], train_model.protos) / Config.TEMP, axis=1)
+        p_t = tf.nn.log_softmax(tf.linalg.matmul(tf.linalg.normalize(train_model.u_t, axis=1, ord='euclidean')[0], tf.linalg.normalize(train_model.protos, axis=1, ord='euclidean')[0] ) / Config.TEMP, axis=1)
         proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
         proto_loss_no_stopgrad = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(train_model.codes * p_t, axis=1))
 
@@ -783,7 +783,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             params = tf.compat.v1.trainable_variables()
             source_params = [p for p in params if "online" in p.name]
             target_params = [p for p in params if "target" in p.name]
-            soft_update(source_params, target_params, tau=0.95)
+            soft_update(source_params, target_params, tau=0.97)
 
 
         assert nbatch % nminibatches == 0
