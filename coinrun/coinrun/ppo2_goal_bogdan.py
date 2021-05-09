@@ -365,7 +365,7 @@ class Model(object):
 
         # tf.linalg.normalize(train_model.u_t, axis=1, ord='euclidean')[0]
         # tf.linalg.normalize(train_model.protos, axis=1, ord='euclidean')[0]
-        p_t = tf.nn.log_softmax(tf.linalg.matmul(tf.linalg.normalize(train_model.u_t, axis=1, ord='euclidean')[0], tf.linalg.normalize(train_model.protos, axis=1, ord='euclidean')[0] ) / Config.TEMP, axis=1)
+        p_t = tf.nn.log_softmax(tf.linalg.matmul(train_model.u_t, train_model.protos ) / Config.TEMP, axis=1)
         proto_loss = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(tf.stop_gradient(train_model.codes) * p_t, axis=1))
         proto_loss_no_stopgrad = -tf.compat.v1.reduce_mean(tf.compat.v1.reduce_sum(train_model.codes * p_t, axis=1))
 
