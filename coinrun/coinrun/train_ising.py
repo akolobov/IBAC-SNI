@@ -50,18 +50,22 @@ from coinrun import ising_env
 import gym
 
 
-class VecMonitor(gym.Wrapper):
-    def __init__(self, venv):
-        super().__init__(self, venv)
+class VecMonitor():
+    def __init__(self, venv, obs_space, act_space):
+        self.venv = venv
         self.eprets = 0
         self.eplens = 0
         self.epcount = 0
+        self.num_envs = 1
+
+        self.observation_space = obs_space
+        self.action_space = act_space
 
     def reset(self):
         obs = self.venv.reset()
         self.eprets = 0
         self.eplens = 0
-        return obs.expand_dims(0)
+        return np.array([obs])
 
     def step(self,a):
         obs, rews, dones, infos = self.venv.step(a)
@@ -82,11 +86,11 @@ class VecMonitor(gym.Wrapper):
             self.eprets = 0
             self.eplens = 0
             
-        return obs.expand_dims(0), np.array([rews]), np.array([dones]), np.array([info])
+        return np.array([obs]), np.array([rews]), np.array([dones]), np.array([info])
 
 # helper function to make env
-def make_env(steps_per_env):
-    venv = VecMonitor(ising_env.IsingEnv(T=32,k=5))
+def make_env(steps_per_env, obs_space, act_space):
+    venv = VecMonitor(ising_env.IsingEnv(T=32,k=5),obs_space, act_space)
     return venv
 
 def main():
@@ -117,11 +121,14 @@ def main():
     #print (env)
 
     mpi_print(Config.ENVIRONMENT)
-    venv = make_env(total_timesteps)
-    venv_eval = make_env(total_timesteps)
-    # import ipdb;ipdb.set_trace()
-    observation_space = Dict(rgb=Box(shape=(64,64,3),low=0,high=255))
+
+     # import ipdb;ipdb.set_trace()
+    observation_space = Box(shape=(64,64,3),low=0,high=255)
     action_space = DiscreteG(5)
+
+    venv = make_env(total_timesteps,observation_space, action_space)
+    venv_eval = make_env(total_timesteps,observation_space, action_space)
+   
     
 
     

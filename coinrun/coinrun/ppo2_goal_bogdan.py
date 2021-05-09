@@ -770,7 +770,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
     os.environ["WANDB_CONSOLE"] = "off"
     group_name = "%s__%s__%d__%d__%f__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.CLUSTER_T,Config.N_KNN, Config.TEMP, Config.N_SKILLS)
     name = "%s__%s__%d__%d__%f__%d__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.CLUSTER_T,Config.N_KNN,  Config.TEMP, Config.N_SKILLS, np.random.randint(100000000))
-    wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
+    wandb.init(project='ising_generalization' if Config.ENVIRONMENT == 'ising' else 'procgen_generalization' , entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
     PRETRAIN = False
     BOLZTMANN_PROTO_SKILL_SELECTION = False
     cluster_returns = np.zeros(Config.N_SKILLS)
@@ -847,13 +847,18 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
         returns_i = np.zeros_like(returns)
 
         # split representation and rl levels
-        levels = np.random.permutation(np.unique(infos[:,:,2]))
-        print('Found %d levels in batch'%len(levels))
-        # train_split = int( 0.2 * len(levels))
-        train_split = int( 1 * len(levels))
-        representation_levels = levels[:train_split]
-        representation_idx = np.where(np.isin(infos[0,:,2],representation_levels)*1)[0]
-        rl_idx = representation_idx
+        try:
+            levels = np.random.permutation(np.unique(infos[:,:,2]))
+            print('Found %d levels in batch'%len(levels))
+            # train_split = int( 0.2 * len(levels))
+            train_split = int( 1 * len(levels))
+            representation_levels = levels[:train_split]
+            representation_idx = np.where(np.isin(infos[0,:,2],representation_levels)*1)[0]
+            rl_idx = representation_idx
+        except:
+            representation_idx = np.array([0])
+            rl_idx = np.array([0])
+        
         # rl_idx = np.where(1-1*np.isin(infos[0,:,2],representation_levels))[0]
 
         rep_obs = obs[:,representation_idx]

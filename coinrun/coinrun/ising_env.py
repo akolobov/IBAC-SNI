@@ -74,7 +74,7 @@ class IsingEnv(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(1, self.N, self.N),
+            shape=(3, self.N, self.N),
             dtype=np.uint8,
         )
 
@@ -109,7 +109,8 @@ class IsingEnv(gym.Env):
             else:
                 self.models[i].reset()
         self.t = 0
-        return self._rescale_state(state)
+        x = self._rescale_state(state)
+        return np.transpose(np.stack([x]*3),(1,2,0))
 
     def step(self,action):
         self.current_path = action
@@ -123,7 +124,8 @@ class IsingEnv(gym.Env):
         reward = -np.log(np.linalg.norm(state-self.goal,ord=2)) # when ||s-goal||=0, reward=infty
         self.t += 1
         done = bool( self.t < self.T )
-        return self._rescale_state(state), reward, done, {}
+        x = self._rescale_state(state)
+        return np.transpose(np.stack([x]*3),(1,2,0)), reward, done, {}
 
 if __name__ == '__main__':
     env = IsingEnv(T=32,k=5)

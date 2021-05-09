@@ -231,6 +231,8 @@ class CnnPolicy(object):
         Clustering part
         """
 
+        N_ACTIONS = 5 if Config.ENVIRONMENT == 'ising' else 15
+
         with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             # h_codes: n_batch x n_t x n_rkhs
             act_condit, act_invariant, _, _ = choose_cnn(X)
@@ -240,12 +242,17 @@ class CnnPolicy(object):
             for k in range(Config.CLUSTER_T):
                 h_t = self.h_codes[:,k:tf.shape(self.h_codes)[1]-(Config.CLUSTER_T-k-1)]
                 a_t = act_one_hot[:,k:tf.shape(act_one_hot)[1]-(Config.CLUSTER_T-k-1)]
-                h_t = tf.reshape(FiLM(widths=[128], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(tf.reshape(h_t,(-1,256)),1),1),tf.reshape(a_t,(-1,15))])[:,0,0],(Config.NUM_ENVS,-1,256))
+                h_t = tf.reshape(FiLM(widths=[128], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(tf.reshape(h_t,(-1,256)),1),1),tf.reshape(a_t,(-1,N_ACTIONS))])[:,0,0],(Config.NUM_ENVS,-1,256))
                 h_acc.append(h_t)
             
             h_seq = tf.reshape( tf.concat(h_acc,2), (-1,256*Config.CLUSTER_T))
             
+            self.z_t_online = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
+
+        with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
             self.z_t = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
+
+        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             
             self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
             
