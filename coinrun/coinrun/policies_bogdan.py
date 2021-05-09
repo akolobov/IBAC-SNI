@@ -239,24 +239,24 @@ class CnnPolicy(object):
             self.h_codes =  tf.transpose(tf.reshape(tf.concat([act_condit, act_invariant], axis=1),[-1,Config.NUM_ENVS,256]),(1,0,2))
             act_one_hot = tf.transpose(tf.reshape(tf.one_hot(self.A_cluster,ac_space.n),[-1,Config.NUM_ENVS,ac_space.n]),(1,0,2))
             h_acc = []
+            h_acc_no_act = []
             for k in range(Config.CLUSTER_T):
                 h_t = self.h_codes[:,k:tf.shape(self.h_codes)[1]-(Config.CLUSTER_T-k-1)]
                 a_t = act_one_hot[:,k:tf.shape(act_one_hot)[1]-(Config.CLUSTER_T-k-1)]
-                h_t = tf.reshape(FiLM(widths=[128], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(tf.reshape(h_t,(-1,256)),1),1),tf.reshape(a_t,(-1,N_ACTIONS))])[:,0,0],(Config.NUM_ENVS,-1,256))
-                h_acc.append(h_t)
+                h_t_film = tf.reshape(FiLM(widths=[128], name='FiLM_layer')([tf.expand_dims(tf.expand_dims(tf.reshape(h_t,(-1,256)),1),1),tf.reshape(a_t,(-1,N_ACTIONS))])[:,0,0],(Config.NUM_ENVS,-1,256))
+                h_acc_no_act.append(tf.reshape(h_t,(Config.NUM_ENVS,-1,256)))
+                h_acc.append(h_t_film)
             
+            h_seq_no_act = tf.reshape( tf.concat(h_acc_no_act,2), (-1,256*Config.CLUSTER_T))
             h_seq = tf.reshape( tf.concat(h_acc,2), (-1,256*Config.CLUSTER_T))
-            
-            self.z_t_online = get_online_predictor(n_in=256*(Config.CLUSTER_T//2),n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq[:,256*(Config.CLUSTER_T//2):])
 
-        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
-            self.z_t = get_online_predictor(n_in=256*(Config.CLUSTER_T//2),n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq[:,:256*(Config.CLUSTER_T//2)])
+            self.z_t_no_act = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred_no_act')(h_seq_no_act)
+            
+            self.z_t = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
 
-        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
             
-            self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t_online)
-            
-        self.z_t_1 = self.z_t_online
+        self.z_t_1 = self.z_t_no_act
         # scores: n_batch x n_clusters
         # tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
         # tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0]
