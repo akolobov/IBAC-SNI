@@ -256,7 +256,7 @@ class CnnPolicy(object):
             
             self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
             
-        self.z_t_1 = self.z_t
+        self.z_t_1 = self.z_t_online
         # scores: n_batch x n_clusters
         # tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
         # tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0]
