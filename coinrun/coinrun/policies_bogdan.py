@@ -247,20 +247,20 @@ class CnnPolicy(object):
             
             h_seq = tf.reshape( tf.concat(h_acc,2), (-1,256*Config.CLUSTER_T))
             
-            self.z_t_online = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
+            self.z_t_online = get_online_predictor(n_in=256*(Config.CLUSTER_T//2),n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq[:,256*(Config.CLUSTER_T//2):])
 
-        with tf.compat.v1.variable_scope("target", reuse=tf.compat.v1.AUTO_REUSE):
-            self.z_t = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
+        with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
+            self.z_t = get_online_predictor(n_in=256*(Config.CLUSTER_T//2),n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq[:,:256*(Config.CLUSTER_T//2)])
 
         with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             
-            self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
+            self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t_online)
             
         self.z_t_1 = self.z_t_online
         # scores: n_batch x n_clusters
         # tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
         # tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0]
-        scores = tf.linalg.matmul(self.z_t_1, self.protos)
+        scores = tf.linalg.matmul(tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0],tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0])
         self.codes = sinkhorn(scores=scores)
 
         
