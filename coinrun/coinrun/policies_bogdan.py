@@ -250,13 +250,13 @@ class CnnPolicy(object):
             h_seq_no_act = tf.reshape( tf.concat(h_acc_no_act,2), (-1,256*Config.CLUSTER_T))
             h_seq = tf.reshape( tf.concat(h_acc,2), (-1,256*Config.CLUSTER_T))
 
-            self.z_t_no_act = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred_no_act')(h_seq_no_act)
+            # self.z_t_no_act = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred_no_act')(h_seq_no_act)
             
             self.z_t = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred')(h_seq)
 
             self.u_t = get_predictor(n_in=CLUSTER_DIMS,n_out=CLUSTER_DIMS,prefix='SH_u_pred')(self.z_t)
             
-        self.z_t_1 = self.z_t_no_act
+        self.z_t_1 = self.z_t
         # scores: n_batch x n_clusters
         # tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0]
         # tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0]
