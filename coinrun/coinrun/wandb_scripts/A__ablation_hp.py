@@ -14,7 +14,9 @@ from download_wandb_data import load_WandB_csvs
 AGENTS = ["ppo_goal_bogdan"]
 CLEAN_NAMES_AGENTS = ['Ours']
 
-selected_run_ids = {'ppo_goal_bogdan':'(.*smarterMYOW__5__3__.*)',
+selected_run_ids = {
+                        # 'ppo_goal_bogdan':'(.*smarterMYOW__5__3__.*)',
+                        'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)', 
                         'ppo':'.*',
                         'ppo_diayn':'.*',
                         'ppg':'.*',

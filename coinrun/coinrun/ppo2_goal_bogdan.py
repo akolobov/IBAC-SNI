@@ -375,7 +375,7 @@ class Model(object):
             myow_loss = tf.reduce_mean(tf.zeros(1))
 
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
-        aux_loss =  proto_loss + myow_loss #+ vf_loss_i*vf_coef 
+        aux_loss =  proto_loss_no_stopgrad + myow_loss #+ vf_loss_i*vf_coef 
 
         
         if Config.JOINT_SKRL:
@@ -588,10 +588,11 @@ class Runner(AbstractEnvRunner):
             eval_obs_exp = self.eval_obs #np.expand_dims(self.eval_obs, 0)
             eval_actions, eval_values, _, eval_states, eval_neglogpacs = self.model.step(eval_obs_exp, update_frac, skill_idx=z, one_hot_skill=one_hot_skill)
             self.eval_obs[:], eval_rewards, self.eval_dones, self.eval_infos = self.eval_env.step(eval_actions)
+            
             for info in self.infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
-            
+                
             for info in self.eval_infos:
                 eval_maybeepinfo = info.get('episode')
                 if eval_maybeepinfo: eval_epinfos.append(eval_maybeepinfo)
@@ -902,8 +903,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             print('Clustering phase')
             for _ in range(E_clustering):
                 np.random.shuffle(rep_inds)
-                # inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
-                inds_2d = np.arange(Config.NUM_STEPS)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                # inds_2d = np.arange(Config.NUM_STEPS)
                 for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
                     print('Minibatch clustering ',start)
                     sess.run([model.train_model.train_dropout_assign_ops])
@@ -926,8 +927,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             print('MYOW phase')
             for _ in range(E_MYOW):
                 np.random.shuffle(rep_inds)
-                # inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
-                inds_2d = np.arange(Config.NUM_STEPS)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort()
+                # inds_2d = np.arange(Config.NUM_STEPS)
                 for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
                     print('Minibatch MYOW ',start)
                     sess.run([model.train_model.train_dropout_assign_ops])

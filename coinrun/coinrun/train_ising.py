@@ -1,5 +1,5 @@
 """
-
+python3 -m coinrun.train_ising --run-id goal --num-levels 0 --short --agent ppo_goal_bogdan -gpu 1 -n_skills 5 --ema --myow --num-envs 1 -disable_wandb 0 -env ising -cluster_t 2
 """
 print('Importing packages')
 import os

@@ -121,10 +121,12 @@ class IsingEnv(gym.Env):
             else:
                 self.models[i].simulate_n(1)
            
-        reward = -np.log(np.linalg.norm(state-self.goal,ord=2)) # when ||s-goal||=0, reward=infty
+        reward = -(np.linalg.norm(state-self.goal,ord=2)) # when ||s-goal||=0, reward=infty
         self.t += 1
         done = bool( self.t < self.T )
         x = self._rescale_state(state)
+        if done:
+            self.reset()
         return np.transpose(np.stack([x]*3),(1,2,0)), reward, done, {}
 
 if __name__ == '__main__':

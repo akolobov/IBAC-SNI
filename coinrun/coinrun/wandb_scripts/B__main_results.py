@@ -15,9 +15,10 @@ AGENTS = ["ppo_goal_bogdan","ppo",'ppo_diayn',"ppo_curl",'ppo_skrl',"ppg"]
 CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL",'PPO+Sinkhorn',"DAAC"]
 
 selected_run_ids = {    
-                        # 'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)', 
+                        'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)', 
                         # 'ppo_goal_bogdan':'(.*normUt__2__3__0.500000__200.*)|(.*skrl.*)',
-                        'ppo_goal_bogdan':'(.*noShuffleT__3__2__0.100000__200.*)|(.*skrl.*)',
+                        # 'ppo_goal_bogdan':'(.*noShuffleT__3__2__0.100000__200.*)|(.*skrl.*)',
+                        # 'ppo_goal_bogdan':'(.*CE_Film__2__3__0.100000__200.*)|(.*skrl.*)',
                         # 'ppo_goal_bogdan':'(.*meta.*)|(.*skrl.*)',
                         'ppo_goal':'.*',
                         'ppo':'.*',
