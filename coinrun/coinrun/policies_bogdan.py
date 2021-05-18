@@ -263,7 +263,7 @@ class CnnPolicy(object):
         scores = tf.linalg.matmul(tf.linalg.normalize(self.z_t_1, axis=1, ord='euclidean')[0],tf.linalg.normalize(self.protos, axis=1, ord='euclidean')[0])
         self.codes = sinkhorn(scores=scores)
 
-        
+        self.myow_loss = 0.
         if Config.MYOW:
             """
             MYOW where k-NN neighbors are replaced by Sinkhorn clusters
@@ -315,7 +315,7 @@ class CnnPolicy(object):
                 v_target_net = get_predictor(n_in=256*Config.CLUSTER_T,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_v_pred')
                 r_target_net = get_predictor(n_in=HIDDEN_DIMS_SSL,n_out=HIDDEN_DIMS_SSL,prefix='MYOW_r_pred')
 
-            self.myow_loss = 0.
+            
             for k in range(k_t):
                 nearby_cluster_idx = tf.gather(indx[:,k+1],cluster_idx)
                 nearby_batch_vecs = tf.reshape(tf.gather(cluster_membership_list,tf.cast(nearby_cluster_idx,tf.int32)),(-1,))

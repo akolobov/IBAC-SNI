@@ -11,29 +11,11 @@ import glob
 
 from download_wandb_data import load_WandB_csvs
 
-ablation = 'cluster_sim'
-# ablation = 'cluster_t'
-# ablation = 'n_clusters'
-# ablation = 'temp'
-
 AGENTS = ["ppo_goal_bogdan"]
 CLEAN_NAMES_AGENTS = ['Ours']
 
-if ablation == "temp":
-    run_regex = '(.*jointSKMYOW__2__3__.*)'
-elif ablation == "n_clusters":
-    run_regex = '.*normUt__2__3__0.300000__(100|300).*'
-elif ablation == "cluster_t":
-    run_regex = '(.*ShuffleT__3__2__0.100000__200.*)|(.*ShuffleT__5__3__0.300000__200.*)'
-elif ablation == 'cluster_sim':
-    run_regex = '(.*__trajectoryClusters.*)'
-else:
-    print('Not an existing ablation')
-    exit()
-
 selected_run_ids = {
-                        # 'ppo_goal_bogdan':'(.*smarterMYOW__5__3__.*)',
-                        'ppo_goal_bogdan':run_regex
+                        'ppo_goal_bogdan':'(.*ising__goal.*__2)|(.*ising__goal.*__4)|(.*ising__goal.*__5)|(.*ising__goal.*__6)'
                     }
 
 agent2label = dict(zip(AGENTS,CLEAN_NAMES_AGENTS))
@@ -49,18 +31,13 @@ print(df['group'].unique())
 print('#######################')
 
 # metrics = ['eprew','eprew_eval','silhouette_score']
-if ablation == 'cluster_sim':
-    metrics = ['cluster_similarity']
-else:
-    metrics = ['silhouette_score','eprew_eval','cluster_similarity']
+metrics = ['silhouette_score','eprew_eval','eprew']
 clean_metric = {'eprew':'Training reward',
                 'eprew_eval':'Evaluation reward',
                 'silhouette_score': 'Silhouette score'}
 
 X_LEFT = 0
-# X_RIGHT = 8e6
-X_RIGHT = 2000
-EMA = 300
+X_RIGHT = 1400
 
 rp = [-1029.86559098,  2344.5778132 , -1033.38786418,  -487.3693808 ,
          298.50245209,   167.25393272]
@@ -85,54 +62,27 @@ def gradient(x, rfactors, gfactors, bfactors):
 
 
 def set_run_attributes(sub_df):
-    """
-    Ablation 1: temperature vs silhouette
-    """
-    if ablation == "temp":
-        T = float(sub_df['temp'].unique()[-1])
-        label = 'T=%.2f' %(T)
-        if T == 0.3:
-            col = 'tab:red'
-        elif T == 0.1:
-            col = 'tab:orange'
-        elif T == 0.01:
-            col = 'tab:olive'
-        elif T == 0.2:
-            col = 'tab:blue'
-    """
-    Ablation 2: number of clusters
-    """
-    if ablation == "n_clusters":
-        n_clusters = float(sub_df['n_skills'].unique()[-1])
-        label = 'Number of clusters=%d' %(n_clusters)
-        if n_clusters == 200:
-            col = 'tab:red'
-        elif n_clusters == 100:
-            col = 'tab:orange'
-        elif n_clusters == 400:
-            col = 'tab:olive'
-        elif n_clusters == 300:
-            col = 'tab:blue'
-    if ablation == 'cluster_t':
-        cluster_t = float(sub_df['cluster_t'].unique()[-1])
-        label = 'Cluster timesteps=%d' %(cluster_t)
-        if cluster_t == 2:
-            col = 'tab:red'
-        elif cluster_t == 3:
-            col = 'tab:orange'
-        elif cluster_t == 10:
-            col = 'tab:olive'
-        elif cluster_t == 5:
-            col = 'tab:blue'
-    if ablation == 'cluster_sim':
+    n_skills = float(sub_df['n_skills'].unique()[-1])
+    # T = float(sub_df['temp'].unique()[-1])
+    label = 'Number of clusters=%d' %(n_skills)
+    col = 'black'
+    # col = gradient(T/1, rp, gp, bp)
+    do_not_plot = False
+    if n_skills == 5:
         col = 'tab:red'
-        label = 'Cluster similarity'
-    return label, col, '-'
+    elif n_skills == 6:
+        col = 'tab:orange'
+    elif n_skills == 4:
+        col = 'tab:olive'
+    elif n_skills == 2:
+        col = 'tab:blue'
+    else:
+        do_not_plot = True
+    return label, col, '-', do_not_plot
 
 for metric in metrics:
     games_list = sorted(df['environment'].unique())
     n_games = len(games_list)    
-    n_games = 16
     nrows = int( np.sqrt(n_games) )
     ncols = n_games // nrows 
     print('Metric: %s, Games: %d, rows: %d, cols: %d' % (metric,n_games,nrows,ncols) )
@@ -146,6 +96,7 @@ for metric in metrics:
             row_str_eval = env_name + ' '
         if metric == 'eprew':
             row_str_train = env_name + ' '
+
         if n_games == 1:
             ax = axes
         else:
@@ -160,12 +111,12 @@ for metric in metrics:
         game_df = df[df['environment']==env_name]
         
         for group_name,group_df in game_df.groupby('group'):
-            group_df[metric] = group_df[metric].ewm(EMA).mean()
+            group_df[metric] = group_df[metric].ewm(1).mean()
             # group_df[metric] = group_df[metric].ewm(20).mean()
             # smooth_df_mu = group_df.groupby('custom_step').apply(np.mean)
             # smooth_df_std = group_df.groupby('custom_step').apply(np.std)
 
-            HP_LABEL, col, linestyle = set_run_attributes(group_df)
+            HP_LABEL, col, linestyle, do_not_plot = set_run_attributes(group_df)
             
             # x = smooth_df_mu.index.to_numpy()
             # mu = smooth_df_mu[metric].to_numpy()
@@ -183,29 +134,21 @@ for metric in metrics:
 
             mu = acc.mean(0)
             std = acc.std(0)
-
-            start_idx = np.min(np.where(np.logical_and(X_LEFT<x,x<X_RIGHT))[0])
-            end_idx = np.max(np.where(np.logical_and(X_LEFT<x,x<X_RIGHT))[0])
-
-            x = x[start_idx:end_idx]
-            mu = mu[start_idx:end_idx]
-
-            x = np.linspace(X_LEFT, X_RIGHT,len(x))
-            ax.plot(x,mu,color=col,label=HP_LABEL,linestyle=linestyle,linewidth=2)
+            
+            if not do_not_plot:
+                ax.plot(x,mu,color=col,label=HP_LABEL,linestyle=linestyle,linewidth=2)
             # ax.fill_between(x, mu-std, mu+std, alpha=0.1, color=np.array(col)/255.)
             max_y = max(max_y,(mu).max())
             min_y = min(min_y,(mu).min())
 
-        ticks_freq = X_RIGHT // 8
+            print(mu[-1])
 
-        major_ticks = np.arange(X_LEFT, X_RIGHT, ticks_freq)
 
-        if ((row_idx == 3 and e_idx != 11) or e_idx == 15) or n_games == 1:
-            ax.set_xticks(major_ticks)
-        else:
-            ax.set_xticks([])
+        major_ticks = np.arange(X_LEFT, X_RIGHT, 5e2)
+
+        ax.set_xticks(major_ticks)
         
-        ticks_x = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x/ticks_freq))
+        ticks_x = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x/1e6))
         ax.xaxis.set_major_formatter(ticks_x)
 
         for tick in ax.xaxis.get_major_ticks():
@@ -221,13 +164,11 @@ for metric in metrics:
         
         ax.set_title(env_name,fontweight="bold",fontsize=20)
 
-        if ( (row_idx == 3 and e_idx != 11) or e_idx == 15 ) or n_games == 1:
-            ax.set_xlabel('Timesteps (M)',fontsize=17)
-        if col_idx == 1 or n_games == 1:
-            if metric == 'silhouette_score':
-                ax.set_ylabel('Silhouette score',fontsize=17)
-            if metric == 'eprew_eval':
-                ax.set_ylabel('Average test reward',fontsize=17)
+        ax.set_xlabel('Timesteps (M)',fontsize=17)
+        if metric == 'silhouette_score':
+            ax.set_ylabel('Silhouette score',fontsize=17)
+        if metric == 'eprew_eval':
+            ax.set_ylabel('Average test reward',fontsize=17)
 
         # ax.set_xlabel('Timesteps (M)',fontsize=17)
         # ax.set_ylabel(clean_metric[metric],fontsize=17)
@@ -241,7 +182,7 @@ for metric in metrics:
     plt.legend(handles,labels, loc='upper center', bbox_to_anchor=(-1.5, -0.3),fancybox=False, shadow=False,prop={'size': 15},ncol=len(handles)) # new_handles, new_labels,
     plt.tight_layout()
     
-    plt.savefig(os.path.join('..','wandb_plots','A__ablation_' + ablation + '_'+metric+'.png'),dpi=200)
+    plt.savefig(os.path.join('..','wandb_plots','D__ising_'+metric+'.png'),dpi=200)
 
 # for name, groups in df.groupby(['group','custom_step']):
 #     import ipdb;ipdb.set_trace()

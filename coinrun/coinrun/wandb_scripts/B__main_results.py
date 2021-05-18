@@ -17,8 +17,8 @@ CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL",'PPO+Sinkhorn',"DAAC"]
 selected_run_ids = {    
                         'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)', 
                         # 'ppo_goal_bogdan':'(.*normUt__2__3__0.500000__200.*)|(.*skrl.*)',
-                        # 'ppo_goal_bogdan':'(.*noShuffleT__3__2__0.100000__200.*)|(.*skrl.*)',
-                        # 'ppo_goal_bogdan':'(.*CE_Film__2__3__0.100000__200.*)|(.*skrl.*)',
+                        # 'ppo_goal_bogdan':'(.*noShuffleT__2__3__0.100000__200.*)|(.*skrl.*)',
+                        # 'ppo_goal_bogdan':'(.*CE_Film__2__3__0.300000__200.*)|(.*skrl.*)',
                         # 'ppo_goal_bogdan':'(.*meta.*)|(.*skrl.*)',
                         'ppo_goal':'.*',
                         'ppo':'.*',
@@ -206,6 +206,9 @@ for metric in metrics:
         
         ticks_x = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(x/1e6))
         ax.xaxis.set_major_formatter(ticks_x)
+
+        ticks_y = ticker.FuncFormatter(lambda x, pos: '{0:g}'.format(round(x,1)))
+        ax.yaxis.set_major_formatter(ticks_y)
         
         for tick in ax.xaxis.get_major_ticks():
             tick.label.set_fontsize(15) 

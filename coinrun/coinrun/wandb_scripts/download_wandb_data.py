@@ -41,30 +41,40 @@ def set_curve_attributes(agent,agent2label):
 def load_WandB_csvs(files,params_to_load,selected_run_ids,AGENTS,agent2label):
     df = []
     for i,fh in enumerate(files): 
-        try:
-            run_df = pd.read_csv(fh,index_col='custom_step').drop(['_step','Unnamed: 0'],1)
-        except:
-            print('Skipping malformated CSV')
-            continue
+        params_selected = {}
         with open(fh[:-4]+'.json','r') as json_fh:
             params = json.load(json_fh)
             for p in params_to_load:
                 if p not in params:
                     params[p] = {}
                     params[p]['value'] = 1
-                run_df[p] = params[p]['value']
-                
+                params_selected[p] = params[p]['value']
+
         run_id_fn, agent_fn = fh.split('/')[2].split('___')
         run_id = params['run_id']['value']
         agent = params['agent']['value']
         agent_fn = agent.split('.')[0]
         group = '__'.join(run_id_fn.split('__')[:-1])
-        
+
         if agent not in AGENTS:
             continue
         
         if not re.findall(selected_run_ids[agent],group):
             continue
+
+        try:
+            run_df = pd.read_csv(fh,index_col='custom_step').drop(['Unnamed: 0'],1)
+            # run_df['custom_step'] = run_df['_step']
+            run_df = run_df.drop(['_step'],1
+            )
+        except Exception as e:
+            print('Skipping malformated CSV')
+            print(e)
+            continue
+        
+        for k,v in params_selected.items():
+            run_df[k] = v
+
         label, col, linestyle, linewidth, marker, do_not_plot = set_curve_attributes(agent,agent2label)
 
         run_df['agent'] = label
@@ -83,9 +93,11 @@ if __name__ == "__main__":
 
     AGENTS = ["ppo_goal_bogdan",'ppo_goal',"ppo","ppo_diayn","ppg",'ppo_curl']
 
-    METRICS = ['custom_step','eprew','eprew_eval','silhouette_score']
+    # METRICS = ['custom_step','eprew','eprew_eval','silhouette_score']
+    METRICS = ['cluster_similarity']
 
     runs = api.runs("ssl_rl/procgen_generalization")
+    # runs = api.runs("ssl_rl/ising_generalization")
     df = []
     for i,run in enumerate(runs): 
     
@@ -98,7 +110,7 @@ if __name__ == "__main__":
         RUN_METRICS = [env_name+'/'+metric for metric in METRICS]
         run_df = run.history(keys=RUN_METRICS,samples=int(1e6))
         if len(run_df) == 0:
-            run_df = run.history(keys=RUN_METRICS[:-1],samples=int(1e6))
+            run_df = run.history(keys=RUN_METRICS,samples=int(1e6))
             
         columns = run_df.columns
         run_df.columns = [x.split('/')[-1] for x in columns]
