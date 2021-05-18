@@ -903,8 +903,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             print('Clustering phase')
             for _ in range(E_clustering):
                 np.random.shuffle(rep_inds)
-                # inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort() # uncomment this if need to sample indx from same trajectory but random timesteps
-                inds_2d = np.arange(Config.NUM_STEPS)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort() # uncomment this if need to sample indx from same trajectory but random timesteps
+                # inds_2d = np.arange(Config.NUM_STEPS)
                 for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
                     print('Minibatch clustering ',start)
                     sess.run([model.train_model.train_dropout_assign_ops])
@@ -927,8 +927,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             print('MYOW phase')
             for _ in range(E_MYOW):
                 np.random.shuffle(rep_inds)
-                # inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort() # uncomment this if need to sample indx from same trajectory but random timesteps
-                inds_2d = np.arange(Config.NUM_STEPS)
+                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort() # uncomment this if need to sample indx from same trajectory but random timesteps
+                # inds_2d = np.arange(Config.NUM_STEPS)
                 for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
                     print('Minibatch MYOW ',start)
                     sess.run([model.train_model.train_dropout_assign_ops])
@@ -1032,16 +1032,16 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 sil_score = 1
                 ch_score = 1
 
-            traj_clusters = mb_Q.reshape(Config.NUM_ENVS,-1,Config.N_SKILLS)[0].argmax(1)
-            protos = sess.run([model.train_model.protos])[0]
-            sim_mat = (protos.transpose()@protos)
-            cos_sim_traj = []
-            for i in range(len(traj_clusters)-1):
-                wandb.log({
-                        '%s/cluster_ids'%(Config.ENVIRONMENT):traj_clusters[i],
-                        '%s/cluster_similarity'%(Config.ENVIRONMENT):sim_mat[traj_clusters[i],traj_clusters[i+1]],
-                        "%s/cluster_custom_step"%(Config.ENVIRONMENT):update*(i+1)
-                        })
+            # traj_clusters = mb_Q.reshape(Config.NUM_ENVS,-1,Config.N_SKILLS)[0].argmax(1)
+            # protos = sess.run([model.train_model.protos])[0]
+            # sim_mat = (protos.transpose()@protos)
+            # cos_sim_traj = []
+            # for i in range(len(traj_clusters)-1):
+            #     wandb.log({
+            #             '%s/cluster_ids'%(Config.ENVIRONMENT):traj_clusters[i],
+            #             '%s/cluster_similarity'%(Config.ENVIRONMENT):sim_mat[traj_clusters[i],traj_clusters[i+1]],
+            #             "%s/cluster_custom_step"%(Config.ENVIRONMENT):update*(i+1)
+            #             })
 
             wandb.log({"%s/ep_len_mean"%(Config.ENVIRONMENT): ep_len_mean,
                         "%s/avg_value"%(Config.ENVIRONMENT):avg_value,
