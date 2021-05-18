@@ -421,13 +421,15 @@ class Model(object):
             _train_aux = trainer_aux.apply_gradients(grads_and_var_aux)
 
 
-
-            grads_and_var_myow = trainer_myow.compute_gradients(myow_loss, params)
-            grads_myow, var_myow = zip(*grads_and_var_myow)
-            if max_grad_norm is not None:
-                grads_myow, _grad_norm_myow = tf.clip_by_global_norm(grads_myow, max_grad_norm)
-            grads_and_var_myow = list(zip(grads_myow, var_myow))
-            _train_myow = trainer_myow.apply_gradients(grads_and_var_myow)
+            if Config.MYOW:
+                grads_and_var_myow = trainer_myow.compute_gradients(myow_loss, params)
+                grads_myow, var_myow = zip(*grads_and_var_myow)
+                if max_grad_norm is not None:
+                    grads_myow, _grad_norm_myow = tf.clip_by_global_norm(grads_myow, max_grad_norm)
+                grads_and_var_myow = list(zip(grads_myow, var_myow))
+                _train_myow = trainer_myow.apply_gradients(grads_and_var_myow)
+            else:
+                _train_myow = _train_aux
 
         
         
