@@ -375,7 +375,7 @@ class Model(object):
             myow_loss = tf.reduce_mean(tf.zeros(1))
 
         loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef + l2_loss * Config.L2_WEIGHT + beta * info_loss
-        aux_loss =  myow_loss #+ vf_loss_i*vf_coef 
+        aux_loss =  proto_loss_no_stopgrad + myow_loss #+ vf_loss_i*vf_coef 
 
         
         if Config.JOINT_SKRL:
