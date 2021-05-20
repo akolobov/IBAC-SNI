@@ -93,8 +93,8 @@ if __name__ == "__main__":
 
     AGENTS = ["ppo_goal_bogdan",'ppo_goal',"ppo","ppo_diayn","ppg",'ppo_curl']
 
-    # METRICS = ['custom_step','eprew','eprew_eval','silhouette_score']
-    METRICS = ['cluster_similarity']
+    METRICS = ['custom_step','eprew','eprew_eval','silhouette_score']
+    # METRICS = ['cluster_similarity']
 
     runs = api.runs("ssl_rl/procgen_generalization")
     # runs = api.runs("ssl_rl/ising_generalization")

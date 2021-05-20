@@ -14,8 +14,8 @@ from download_wandb_data import load_WandB_csvs
 AGENTS = ["ppo_goal_bogdan","ppo",'ppo_diayn',"ppo_curl",'ppo_skrl',"ppg"]
 CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL",'PPO+Sinkhorn',"DAAC"]
 
-selected_run_ids = {    
-                        'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)', 
+selected_run_ids = {    'ppo_goal_bogdan': '(.*May18_ablationSK.*)',
+                        # 'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)', 
                         # 'ppo_goal_bogdan':'(.*normUt__2__3__0.500000__200.*)|(.*skrl.*)',
                         # 'ppo_goal_bogdan':'(.*noShuffleT__2__3__0.100000__200.*)|(.*skrl.*)',
                         # 'ppo_goal_bogdan':'(.*CE_Film__2__3__0.300000__200.*)|(.*skrl.*)',
@@ -186,15 +186,16 @@ for metric in metrics:
             
         a_idx = 0
         for agent in CLEAN_NAMES_AGENTS:
-            if metric == 'eprew_eval':
-                row_str_eval += '& %.1f$\pm$%.1f ' % methods_results[agent]
-            if metric == 'eprew':
-                row_str_train += '& %.1f$\pm$%.1f ' % methods_results[agent]
-            # add best score to table of scores for normalized absolute score computation
-            if metric == 'eprew_eval':
-                reported_scores_eval[e_idx,a_idx] = methods_results[agent][0]
-            if metric == 'eprew':
-                reported_scores_train[e_idx,a_idx] = methods_results[agent][0]
+            if agent in methods_results.keys():
+                if metric == 'eprew_eval':
+                    row_str_eval += '& %.1f$\pm$%.1f ' % methods_results[agent]
+                if metric == 'eprew':
+                    row_str_train += '& %.1f$\pm$%.1f ' % methods_results[agent]
+                # add best score to table of scores for normalized absolute score computation
+                if metric == 'eprew_eval':
+                    reported_scores_eval[e_idx,a_idx] = methods_results[agent][0]
+                if metric == 'eprew':
+                    reported_scores_train[e_idx,a_idx] = methods_results[agent][0]
             a_idx += 1
 
         major_ticks = np.arange(X_LEFT, X_RIGHT+100, 1e6)
