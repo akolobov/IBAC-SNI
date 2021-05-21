@@ -372,6 +372,9 @@ def main():
         elif Config.AGENT == 'ppg_cluster':
             from coinrun import ppo2_ppg_sinkhorn as agent
             from coinrun import policies_ppg_sinkhorn as policies
+        elif Config.AGENT == 'ppo_bisimulation':
+            from coinrun import ppo2_bisimulation as agent
+            from coinrun import policies_bisimulation as policies
         policy = policies.get_policy()
 
         agent.learn(policy=policy,
