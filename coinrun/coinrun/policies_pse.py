@@ -261,10 +261,10 @@ def representation_alignment_loss(representation_1,
     representation_1, representation_2 = representation_2, representation_1
     metric_vals = tf.transpose(metric_vals)
 
-  indices = sample_indices(tf.shape(metric_vals)[0], sort=return_representation)
+  indices = sample_indices(tf.shape(metric_vals)[0], size=1024, sort=return_representation)
 #   obs1 = tf.gather(obs1, indices, axis=0)
   metric_vals = tf.gather(metric_vals, indices, axis=0)
-
+  
   similarity_matrix = cosine_similarity(representation_1, representation_2)
   alignment_loss = contrastive_loss(
       similarity_matrix,
@@ -363,11 +363,12 @@ class CnnPolicy(object):
             representation_1, representation_2 = h_pse[:n_pse], h_pse[n_pse:]
             # PSE loss
             metric_vals = compute_psm_metric(tf.one_hot(self.pse_actions_1,15),tf.one_hot(self.pse_actions_2,15),Config.GAMMA)
+            
             self.contrastive_loss = representation_alignment_loss(
                         representation_1,
                         representation_2,
                         metric_vals,
-                        use_coupling_weights=False,
+                        use_coupling_weights=True,
                         temperature=contrastive_loss_temperature,
                         return_representation=False)
     
