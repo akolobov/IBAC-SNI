@@ -740,11 +740,19 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	
 	nbatch_train = nbatch // nminibatches
 
+	
 	model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
 					nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
 					max_grad_norm=max_grad_norm)
 
-	utils.load_all_params(sess)
+
+	model_saver = tf.compat.v1.train.Saver()
+	# saver to save and load models
+	if Config.RESTORE_IDD is not None:
+		mpi_print('Restoring model...')
+		model_saver.restore(sess, save_path='{}{}-1'.format(Config.RESTORE_PATH, Config.RESTORE_IDD))
+	# TODO(Ahmed) remove coinrun saving code if default TF methods work
+	#utils.load_all_params(sess)
 
 	runner = Runner(env=env, eval_env=eval_env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
 
@@ -769,10 +777,11 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	if Config.SYNC_FROM_ROOT and rank != 0:
 		can_save = False
 
-	def save_model(base_name=None):
-		base_dict = {'datapoints': datapoints}
-		utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
-
+	# TODO(Ahmed) remove coinrun saving code if default TF methods work
+	# def save_model(base_name=None):
+	# 	base_dict = {'datapoints': datapoints}
+	# 	utils.save_params_in_scopes(sess, ['model'], Config.get_save_file(base_name=base_name), base_dict)
+	
 	# For logging purposes, allow restoring of update
 	start_update = 0
 	if Config.RESTORE_STEP is not None:
@@ -904,16 +913,21 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			wandb.log({"%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
 						"%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
 						"%s/custom_step"%(Config.ENVIRONMENT):step})
-		if can_save:
-			if save_interval and (update % save_interval == 0):
-				save_model()
+		# can_save = True
+		# save_interval = 10
+		# if can_save:
+		# 	if save_interval and (update % save_interval == 0):
+		# 		save_model()
 
-			for j, checkpoint in enumerate(checkpoints):
-				if (not saved_key_checkpoints[j]) and (step >= (checkpoint * 1e6)):
-					saved_key_checkpoints[j] = True
-					save_model(str(checkpoint) + 'M')
+			# for j, checkpoint in enumerate(checkpoints):
+			# 	if (not saved_key_checkpoints[j]) and (step >= (checkpoint * 1e6)):
+			# 		saved_key_checkpoints[j] = True
+			# 		save_model(str(checkpoint) + 'M')
 
-	save_model()
+	# save_model()
 
+	# save model at the end of training loop
+	true_path = model_saver.save(sess, save_path='{}{}'.format(Config.RESTORE_PATH, Config.RUN_ID), global_step=1)
+	mpi_print('true path for checkpoint', true_path)
 	env.close()
 	return mean_rewards

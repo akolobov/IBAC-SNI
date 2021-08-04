@@ -854,7 +854,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs, rewards))
                 model.train(lrnow, cliprangenow, *slices, train_target='encoder')
                 slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs, rewards))
-                model.train(lrnow, cliprangenow, *slices, train_target='target')
+                model.train(lrnow, cliprangenow, *slices, train_target='latent')
         # update the dropout mask
         sess.run([model.train_model.train_dropout_assign_ops])
         sess.run([model.train_model.run_dropout_assign_ops])

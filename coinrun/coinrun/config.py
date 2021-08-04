@@ -34,6 +34,10 @@ class ConfigSingle(object):
 
         ### Only for test_vars and enjoy:
 
+        # Save path for model weights
+        # Use '/mnt/saved_models/' for lots of storage
+        type_keys.append(('respath', 'restore_path', str, './saved_models/'))
+
         # Helper for the case that we need to replay
         bool_keys.append(('replay', 'replay'))
 
@@ -165,6 +169,8 @@ class ConfigSingle(object):
         # If NUM_LEVELS = 0, the training set is unbounded. All level seeds will be randomly generated.
         # Use SET_SEED = -1 and NUM_LEVELS = 500 to train with the same levels in the paper.
         type_keys.append(('nlev', 'num_levels', int, 0, True))
+
+        type_keys.append(('start_level', 'start_level', int, 0, True))
 
         # Provided as a seed for training set generation.
         # If SET_SEED = -1, this seed is not used and level seeds with be drawn from the range [0, NUM_LEVELS).

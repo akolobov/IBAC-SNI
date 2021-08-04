@@ -6,6 +6,8 @@ To run:
 conda activate aidl
 cd jobs/IBAC-SNI/coinrun
 
+PSE:
+python3 -m coinrun.train_agent --env coinrun --run-id pse --num-levels 0 --short --agent ppo_pse
 
 Our algo:
 python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss -n-heads 5 -m 10 -rep_lambda 1
@@ -32,6 +34,9 @@ python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --shor
 python3 -m coinrun.train_agent --env coinrun --run-id goal --num-levels 0 --short --agent ppo_goal -gpu 1 -n_skills 50 --ema --myow --ccp
 RND:
 python3 -m coinrun.train_agent --env coinrun --run-id rnd --num-levels 0 --short --agent ppo_rnd
+
+# To run and save models on AIDL VM to path with 1 TB of storage
+python3 -m coinrun.train_agent --env coinrun --run-id test --num-levels 0 --vshort --agent ppo -phase1 easy -phase2 easy -respath /mnt/saved_models/
 
 # to change the distribution mode of the first and second phase:
 -phase1 exploration -phase2 hard
@@ -249,16 +254,16 @@ def make_env(steps_per_env):
     action_space = DiscreteG(15)
     if Config.FIRST_PHASE == 'exploration':
         # baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
-        gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+        gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE, start_level=Config.START_LEVEL)
     else:
         # baseline_vec_train = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
-        gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE)
+        gym3_env_train = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.FIRST_PHASE, start_level=Config.START_LEVEL)
     if Config.SECOND_PHASE == 'exploration':
         # baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
-        gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+        gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT,  paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE, start_level=Config.START_LEVEL)
     elif Config.SECOND_PHASE != "None":
         # baseline_vec_adapt = ProcgenEnv(num_envs=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
-        gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE)
+        gym3_env_adapt = ProcgenGym3Env(num=Config.NUM_ENVS, env_name=Config.ENVIRONMENT, num_levels=Config.NUM_LEVELS, paint_vel_info=Config.PAINT_VEL_INFO, distribution_mode=Config.SECOND_PHASE, start_level=Config.START_LEVEL)
     else:
         baseline_vec_adapt = gym3_env_adapt = None
     
@@ -315,7 +320,7 @@ def main():
     elif Config.SHORT_TRAINING:
         total_timesteps = int(8e6)
     elif Config.VERY_SHORT_TRAINING:
-        total_timesteps = int(5e6)
+        total_timesteps = int(500e3)
     save_interval = args.save_interval
 
     #env = utils.make_general_env(nenvs, seed=rank)
@@ -375,6 +380,9 @@ def main():
         elif Config.AGENT == 'ppo_bisimulation':
             from coinrun import ppo2_bisimulation as agent
             from coinrun import policies_bisimulation as policies
+        elif Config.AGENT == 'ppo_pse':
+            from coinrun import ppo2_pse as agent
+            from coinrun import policies_pse as policies
         policy = policies.get_policy()
 
         agent.learn(policy=policy,

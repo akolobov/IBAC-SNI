@@ -526,6 +526,9 @@ class CnnPolicy(object):
 							self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
 					with tf.compat.v1.variable_scope("head_i", reuse=tf.compat.v1.AUTO_REUSE):
 						self.pd_train_i = self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]
+				elif Config.AGENT == 'ppo':
+					with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
+						self.pd_train = [self.pdtype.pdfromlatent(tf.concat(self.h, axis=1), init_scale=0.01)[0]]
 				else:
 					with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
 						self.pd_train = [self.pdtype.pdfromlatent(tf.concat([self.h, self.concat_code], axis=1), init_scale=0.01)[0]]

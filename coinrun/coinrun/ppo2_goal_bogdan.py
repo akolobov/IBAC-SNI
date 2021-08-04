@@ -462,7 +462,7 @@ class Model(object):
                     )[:-1], adv_ratio
             elif train_target=='clustering':
                 return sess.run(
-                        [proto_loss, myow_loss, train_model.codes, _train_aux],
+                        [proto_loss, myow_loss, train_model.codes, train_model.h_seq, _train_aux],
                         td_map
                     )[:-1]
             elif train_target=='myow':
@@ -905,8 +905,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
             print('Clustering phase')
             for _ in range(E_clustering):
                 np.random.shuffle(rep_inds)
-                inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort() # uncomment this if need to sample indx from same trajectory but random timesteps
-                # inds_2d = np.arange(Config.NUM_STEPS)
+                # inds_2d = np.random.uniform(size=(Config.NUM_STEPS)).argsort() # uncomment this if need to sample indx from same trajectory but random timesteps
+                inds_2d = np.arange(Config.NUM_STEPS)
                 for start in range(0, Config.NUM_STEPS, N_BATCH_AUX):
                     print('Minibatch clustering ',start)
                     sess.run([model.train_model.train_dropout_assign_ops])
@@ -919,7 +919,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                     v_cluster = values[:,representation_idx].reshape(-1)[mbinds]
                     
                     # h_shape=sess.run([model.train_model.h_shape],{model.train_model.REP_PROC:obs_subsampled_cluster})
-                    cluster_loss_res, myow_loss_res, mb_Q, = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
+                    cluster_loss_res, myow_loss_res, mb_Q, h_seq = model.train(lrnow, cliprangenow, states_nce, anchors_nce, labels_nce, obs_subsampled_cluster,act_subsampled_cluster,r_cluster, curr_step, *slices, train_target='clustering')
                     if BOLZTMANN_PROTO_SKILL_SELECTION:
                         cluster_returns = np.zeros(Config.N_SKILLS)
                         cluster_idx = mb_Q.argmax(1)
@@ -1034,6 +1034,13 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
                 sil_score = 1
                 ch_score = 1
 
+            if (update % 12) == 0:
+                import pickle
+                with open('tsne_data_%d.pkl'%(step),'wb') as fh:
+                    pickle.dump((mb_Q, h_seq, obs_subsampled_cluster),fh)
+                print('Saved data to pkl')
+            if step >= 1100000:
+                exit()
             # traj_clusters = mb_Q.reshape(Config.NUM_ENVS,-1,Config.N_SKILLS)[0].argmax(1)
             # protos = sess.run([model.train_model.protos])[0]
             # sim_mat = (protos.transpose()@protos)

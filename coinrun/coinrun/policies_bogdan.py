@@ -247,8 +247,9 @@ class CnnPolicy(object):
                 h_acc_no_act.append(tf.reshape(h_t,(Config.NUM_ENVS,-1,256)))
                 h_acc.append(h_t_film)
             
-            h_seq_no_act = tf.reshape( tf.concat(h_acc_no_act,2), (-1,256*Config.CLUSTER_T))
+            # h_seq_no_act = tf.reshape( tf.concat(h_acc_no_act,2), (-1,256*Config.CLUSTER_T))
             h_seq = tf.reshape( tf.concat(h_acc,2), (-1,256*Config.CLUSTER_T))
+            self.h_seq = h_seq
 
             # self.z_t_no_act = get_online_predictor(n_in=256*Config.CLUSTER_T,n_out=CLUSTER_DIMS,prefix='SH_z_pred_no_act')(h_seq_no_act)
             
