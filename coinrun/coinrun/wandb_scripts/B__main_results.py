@@ -11,10 +11,11 @@ import glob
 
 from download_wandb_data import load_WandB_csvs
 
-AGENTS = ["ppo_goal_bogdan","ppo",'ppo_diayn',"ppo_curl",'ppo_skrl',"ppg"]
-CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL",'PPO+Sinkhorn',"DAAC"]
+AGENTS = ["ppo_goal_bogdan","ppo",'ppo_diayn',"ppo_curl",'ppo_skrl',"ppg",'ppo_bisimulation']
+CLEAN_NAMES_AGENTS = ['Ours',"PPO",'PPO+DIAYN',"PPO+CURL",'PPO+Sinkhorn',"DAAC","DBC"]
 
 selected_run_ids = {    'ppo_goal_bogdan': '(.*May18_ablationSK.*)',
+                        'ppo_bisimulation': '(.*bisimulation2.*)',
                         # 'ppo_goal_bogdan':'(.*jointSKMYOW__2__3__0.300000__200.*)|(.*skrl.*)', 
                         # 'ppo_goal_bogdan':'(.*normUt__2__3__0.500000__200.*)|(.*skrl.*)',
                         # 'ppo_goal_bogdan':'(.*noShuffleT__2__3__0.100000__200.*)|(.*skrl.*)',
@@ -93,6 +94,9 @@ def set_run_attributes(agent):
         linestyle = '-'
     elif label == 'PPO+Sinkhorn':
         col = 'cyan'
+        linestyle = '-'
+    elif label == 'DBC':
+        col = 'grey'
         linestyle = '-'
     
 

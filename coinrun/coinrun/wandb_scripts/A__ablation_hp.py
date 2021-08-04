@@ -11,10 +11,11 @@ import glob
 
 from download_wandb_data import load_WandB_csvs
 
-ablation = 'cluster_sim'
+# ablation = 'cluster_sim'
 # ablation = 'cluster_t'
 # ablation = 'n_clusters'
 # ablation = 'temp'
+ablation = "loss"
 
 AGENTS = ["ppo_goal_bogdan"]
 CLEAN_NAMES_AGENTS = ['Ours']
@@ -27,6 +28,8 @@ elif ablation == "cluster_t":
     run_regex = '(.*ShuffleT__3__2__0.100000__200.*)|(.*ShuffleT__5__3__0.300000__200.*)'
 elif ablation == 'cluster_sim':
     run_regex = '(.*__trajectoryClusters.*)'
+elif ablation == 'loss':
+    run_regex = '(.*jointSKMYOW__2__3__0.200000__200.*)'
 else:
     print('Not an existing ablation')
     exit()
@@ -51,6 +54,8 @@ print('#######################')
 # metrics = ['eprew','eprew_eval','silhouette_score']
 if ablation == 'cluster_sim':
     metrics = ['cluster_similarity']
+elif ablation == 'loss':
+    metrics = ["myow_loss","cluster_loss"]
 else:
     metrics = ['silhouette_score','eprew_eval','cluster_similarity']
 clean_metric = {'eprew':'Training reward',
@@ -58,9 +63,9 @@ clean_metric = {'eprew':'Training reward',
                 'silhouette_score': 'Silhouette score'}
 
 X_LEFT = 0
-# X_RIGHT = 8e6
-X_RIGHT = 2000
-EMA = 300
+X_RIGHT = 8e6
+# X_RIGHT = 2000
+EMA = 10
 
 rp = [-1029.86559098,  2344.5778132 , -1033.38786418,  -487.3693808 ,
          298.50245209,   167.25393272]
@@ -127,12 +132,15 @@ def set_run_attributes(sub_df):
     if ablation == 'cluster_sim':
         col = 'tab:red'
         label = 'Cluster similarity'
+    if ablation == 'loss':
+        col = 'tab:red'
+        label = 'Loss'
     return label, col, '-'
 
 for metric in metrics:
     games_list = sorted(df['environment'].unique())
     n_games = len(games_list)    
-    n_games = 16
+    # n_games = 16
     nrows = int( np.sqrt(n_games) )
     ncols = n_games // nrows 
     print('Metric: %s, Games: %d, rows: %d, cols: %d' % (metric,n_games,nrows,ncols) )
@@ -158,7 +166,7 @@ for metric in metrics:
         min_y, max_y = float('inf'), float('-inf')
         
         game_df = df[df['environment']==env_name]
-        
+        # print(game_df.columns)
         for group_name,group_df in game_df.groupby('group'):
             group_df[metric] = group_df[metric].ewm(EMA).mean()
             # group_df[metric] = group_df[metric].ewm(20).mean()
@@ -191,6 +199,7 @@ for metric in metrics:
             mu = mu[start_idx:end_idx]
 
             x = np.linspace(X_LEFT, X_RIGHT,len(x))
+            
             ax.plot(x,mu,color=col,label=HP_LABEL,linestyle=linestyle,linewidth=2)
             # ax.fill_between(x, mu-std, mu+std, alpha=0.1, color=np.array(col)/255.)
             max_y = max(max_y,(mu).max())
@@ -217,6 +226,7 @@ for metric in metrics:
             ax.set_ylim(min_y-(max_y-min_y)*0.1,max_y+(max_y-min_y)*0.1)
         except:
             pass
+            
         ax.set_xlim(X_LEFT,X_RIGHT)
         
         ax.set_title(env_name,fontweight="bold",fontsize=20)
@@ -235,14 +245,10 @@ for metric in metrics:
         handles, labels = ax.get_legend_handles_labels()
 
 
-    # plt.tight_layout()
+    plt.tight_layout()
     # plt.legend(handles,labels, loc='lower left', bbox_to_anchor=(0.6,0.1),prop={'size': 15}) # new_handles, new_labels,
 
-    plt.legend(handles,labels, loc='upper center', bbox_to_anchor=(-1.5, -0.3),fancybox=False, shadow=False,prop={'size': 15},ncol=len(handles)) # new_handles, new_labels,
-    plt.tight_layout()
+    # plt.legend(handles,labels, loc='upper center', bbox_to_anchor=(-1.5, -0.3),fancybox=False, shadow=False,prop={'size': 15},ncol=len(handles)) # new_handles, new_labels,
+    # plt.tight_layout()
     
     plt.savefig(os.path.join('..','wandb_plots','A__ablation_' + ablation + '_'+metric+'.png'),dpi=200)
-
-# for name, groups in df.groupby(['group','custom_step']):
-#     import ipdb;ipdb.set_trace()
-

@@ -31,6 +31,12 @@ def set_curve_attributes(agent,agent2label):
     elif label == 'ppo_curl':
         col = 'coral'
         linestyle = '-'
+    elif label == 'ppo_skrl':
+        col = 'cyan'
+        linestyle = '-'
+    elif label == 'ppo_bisimulation':
+        col = 'grey'
+        linestyle = '-'
     
 
     label = agent2label[label]
@@ -91,10 +97,12 @@ if __name__ == "__main__":
 
     api = wandb.Api()
 
-    AGENTS = ["ppo_goal_bogdan",'ppo_goal',"ppo","ppo_diayn","ppg",'ppo_curl']
+    AGENTS = ["ppo_bisimulation","ppo_goal_bogdan",'ppo_goal',"ppo","ppo_diayn","ppg",'ppo_curl']
 
-    METRICS = ['custom_step','eprew','eprew_eval','silhouette_score']
+    # METRICS = ['custom_step','eprew','eprew_eval']
+    # METRICS = ['custom_step','eprew','eprew_eval','silhouette_score']
     # METRICS = ['cluster_similarity']
+    METRICS = ['custom_step','myow_loss','cluster_loss']
 
     runs = api.runs("ssl_rl/procgen_generalization")
     # runs = api.runs("ssl_rl/ising_generalization")
