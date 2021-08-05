@@ -739,15 +739,19 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	nbatch = nenvs * nsteps
 	
 	nbatch_train = nbatch // nminibatches
-
-	
 	model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
-					nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
-					max_grad_norm=max_grad_norm)
+						nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
+						max_grad_norm=max_grad_norm)
+	# with tf.compat.v1.variable_scope('model_1'):
+		# model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
+		# 				nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
+		# 				max_grad_norm=max_grad_norm)
 
 
-	model_saver = tf.compat.v1.train.Saver()
+	# model_1_vars  = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='model_1'):
+	# model_saver = tf.compat.v1.train.Saver(var_list=model_1_vars)
 	# saver to save and load models
+	model_saver = tf.compat.v1.train.Saver()
 	if Config.RESTORE_IDD is not None:
 		mpi_print('Restoring model...')
 		model_saver.restore(sess, save_path='{}{}-1'.format(Config.RESTORE_PATH, Config.RESTORE_IDD))
@@ -927,7 +931,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	# save_model()
 
 	# save model at the end of training loop
-	true_path = model_saver.save(sess, save_path='{}{}'.format(Config.RESTORE_PATH, Config.RUN_ID), global_step=1)
+	true_path = model_saver.save(sess, save_path='{}{}'.format(Config.RESTORE_PATH, Config.RUN_ID, Config.START_LEVEL), global_step=1)
 	mpi_print('true path for checkpoint', true_path)
 	env.close()
 	return mean_rewards
