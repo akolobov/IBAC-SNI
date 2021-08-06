@@ -800,6 +800,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	run_name = "%s__%s__%s__%d" %(Config.ENVIRONMENT,Config.AGENT,Config.RUN_ID,Config.START_LEVEL)
 	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=run_name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	
+	print('Tf using GPU:')
+	print(tf.test.is_built_with_cuda())
 	for update in range(start_update+1, nupdates+1):
 		assert nbatch % nminibatches == 0
 		nbatch_train = nbatch // nminibatches
