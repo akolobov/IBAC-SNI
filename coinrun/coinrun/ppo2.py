@@ -799,6 +799,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	group_name = "%s__%s__%s" %(Config.ENVIRONMENT,Config.AGENT,Config.RUN_ID)
 	run_name = "%s__%s__%s__%d" %(Config.ENVIRONMENT,Config.AGENT,Config.RUN_ID,Config.START_LEVEL)
 	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=run_name, mode="disabled" if Config.DISABLE_WANDB else "online")
+	
 	for update in range(start_update+1, nupdates+1):
 		assert nbatch % nminibatches == 0
 		nbatch_train = nbatch // nminibatches
@@ -880,7 +881,6 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		fps = int(nbatch / (tnow - tstart))
 
 		if update % log_interval == 0 or update == 1:
-			model_saver.save(sess, save_path=Config.RESTORE_PATH + Config.RUN_ID, global_step=1)
 			step = update*nbatch
 			eval_rew_mean = utils.process_ep_buf(eval_active_ep_buf, tb_writer=tb_writer, suffix='_eval', step=step)
 			rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
@@ -919,9 +919,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			wandb.log({"%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
 						"%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
 						"%s/custom_step"%(Config.ENVIRONMENT):step})
-		if update == 1:
-			quit()
-			break
+		# if update == 1:
+		# 	quit()
+		# 	break
 		# can_save = True
 		# save_interval = 10
 		# if can_save:
