@@ -36,7 +36,7 @@ class ConfigSingle(object):
 
         # Save path for model weights
         # Use '/mnt/saved_models/' for lots of storage
-        type_keys.append(('respath', 'restore_path', str, './saved_models/'))
+        type_keys.append(('respath', 'restore_path', str, './saved_models'))
 
         # Helper for the case that we need to replay
         bool_keys.append(('replay', 'replay'))

@@ -796,8 +796,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	tb_writer = TB_Writer(sess)
 	import os
 	os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
-	group_name = "%s__%s__%f" %(Config.ENVIRONMENT,Config.AGENT,Config.REP_LOSS_WEIGHT)
-	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, mode="disabled" if Config.DISABLE_WANDB else "online")
+	group_name = "%s__%s__%s" %(Config.ENVIRONMENT,Config.AGENT,Config.RUN_ID)
+	run_name = "%s__%s__%s__%d" %(Config.ENVIRONMENT,Config.AGENT,Config.RUN_ID,Config.START_LEVEL)
+	wandb.init(project='procgen_generalization', entity='ssl_rl', config=Config.args_dict, group=group_name, name=run_name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	for update in range(start_update+1, nupdates+1):
 		assert nbatch % nminibatches == 0
 		nbatch_train = nbatch // nminibatches
@@ -879,6 +880,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		fps = int(nbatch / (tnow - tstart))
 
 		if update % log_interval == 0 or update == 1:
+			model_saver.save(sess, save_path=Config.RESTORE_PATH + Config.RUN_ID, global_step=1)
 			step = update*nbatch
 			eval_rew_mean = utils.process_ep_buf(eval_active_ep_buf, tb_writer=tb_writer, suffix='_eval', step=step)
 			rew_mean_10 = utils.process_ep_buf(active_ep_buf, tb_writer=tb_writer, suffix='', step=step)
@@ -917,6 +919,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			wandb.log({"%s/eprew"%(Config.ENVIRONMENT):rew_mean_10,
 						"%s/eprew_eval"%(Config.ENVIRONMENT):eval_rew_mean,
 						"%s/custom_step"%(Config.ENVIRONMENT):step})
+		if update == 1:
+			quit()
+			break
 		# can_save = True
 		# save_interval = 10
 		# if can_save:
@@ -931,7 +936,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	# save_model()
 
 	# save model at the end of training loop
-	true_path = model_saver.save(sess, save_path='{}{}'.format(Config.RESTORE_PATH, Config.RUN_ID, Config.START_LEVEL), global_step=1)
+	save_model_path = '%s-%s-%s'%(Config.RESTORE_PATH, Config.RUN_ID, Config.START_LEVEL)
+	true_path = model_saver.save(sess, save_path=save_model_path+'/ppo', global_step=1)
+	wandb.save(save_model_path+'/*')
 	mpi_print('true path for checkpoint', true_path)
 	env.close()
 	return mean_rewards
