@@ -394,7 +394,7 @@ def main():
                     lam=0.95,
                     gamma=Config.GAMMA,
                     noptepochs=Config.PPO_EPOCHS,
-                    log_interval=1,
+                    log_interval=30,
                     ent_coef=Config.ENTROPY_COEFF,
                     lr=lambda f : f * Config.LEARNING_RATE,
                     cliprange=lambda f : f * 0.2,
