@@ -838,6 +838,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			save_wandb_file('ppo-1.meta')
 
 			print('Downloaded level id %s to %s' % (level_id,run_save_dir) )
+			print(os.listdir(run_save_dir))
 			# wandb.restore(wandb_save_dir+"/checkpoint",run_path='/'.join(run.path))
 
 	# load in just the graph and model parameters outside for-loop
