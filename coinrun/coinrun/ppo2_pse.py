@@ -816,7 +816,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	single_level_runs=[run for run in list_runs if 'ppo_per_level' in run.name]
 	non_crashed = [run for run in single_level_runs if run.state in ['running','finished']]
 	game_runs = [run for run in non_crashed if Config.ENVIRONMENT in run.name]
-	wandb_save_dir = './loaded_ppo_policies/%s'%Config.ENVIRONMENT
+	wandb_save_dir = '%s/%s'%(Config.RESPATH,Config.ENVIRONMENT)
 
 	if not os.path.isdir(wandb_save_dir):
 		import requests
