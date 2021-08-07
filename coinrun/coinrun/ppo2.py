@@ -303,7 +303,6 @@ class Model(object):
 		weight_params = [v for v in params if '/b' not in v.name]
 
 		total_num_params = 0
-
 		for p in params:
 			shape = p.get_shape().as_list()
 			num_params = np.prod(shape)
@@ -751,6 +750,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	# model_1_vars  = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='model_1'):
 	# model_saver = tf.compat.v1.train.Saver(var_list=model_1_vars)
 	# saver to save and load models
+	# import ipdb;ipdb.set_trace()
 	model_saver = tf.compat.v1.train.Saver()
 	if Config.RESTORE_IDD is not None:
 		mpi_print('Restoring model...')

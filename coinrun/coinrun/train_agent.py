@@ -7,7 +7,7 @@ conda activate aidl
 cd jobs/IBAC-SNI/coinrun
 
 PSE:
-python3 -m coinrun.train_agent --env coinrun --run-id pse --num-levels 0 --short --agent ppo_pse
+python3 -m coinrun.train_agent --env coinrun --run-id pse --num-levels 0 --short --agent ppo_pse -phase1 easy -phase2 easy
 
 Our algo:
 python3 -m coinrun.train_agent --env coinrun --run-id baseline --num-levels 0 --short --rep_loss -n-heads 5 -m 10 -rep_lambda 1

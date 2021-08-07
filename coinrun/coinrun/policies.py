@@ -189,7 +189,8 @@ def _compute_distance(x, y):
 
 
 class CnnPolicy(object):
-	def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, **conv_kwargs): #pylint: disable=W0613
+	def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, max_grad_norm, override_agent=None, **conv_kwargs): #pylint: disable=W0613
+		self.override_agent = override_agent
 		self.pdtype = make_pdtype(ac_space)
 		self.rep_loss = None
 		# explicitly create  vector space for latent vectors
@@ -526,7 +527,7 @@ class CnnPolicy(object):
 							self.pd_train.append(self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0])
 					with tf.compat.v1.variable_scope("head_i", reuse=tf.compat.v1.AUTO_REUSE):
 						self.pd_train_i = self.pdtype.pdfromlatent(self.h, init_scale=0.01)[0]
-				elif Config.AGENT == 'ppo':
+				elif Config.AGENT == 'ppo' or override_agent == 'ppo':
 					with tf.compat.v1.variable_scope("head_0", reuse=tf.compat.v1.AUTO_REUSE):
 						self.pd_train = [self.pdtype.pdfromlatent(tf.concat(self.h, axis=1), init_scale=0.01)[0]]
 				else:
@@ -576,7 +577,7 @@ class CnnPolicy(object):
 				else:
 					a, v, v_i, neglogp = sess.run([a0_run[0], self.vf_run[0], self.vf_i_run, neglogp0_run[0]], {REP_PROC: ob, Z: one_hot_skill})
 					return a, v, v_i, self.initial_state, neglogp
-			elif Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS:
+			elif (Config.AGENT == 'ppo' and not Config.CUSTOM_REP_LOSS) or self.override_agent == 'ppo':
 				head_idx = 0
 				a, v, neglogp = sess.run([a0_run[head_idx], self.vf_run[head_idx], neglogp0_run[head_idx]], {X: ob})
 				return a, v, self.initial_state, neglogp
