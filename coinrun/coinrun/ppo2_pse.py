@@ -817,7 +817,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	non_crashed = [run for run in single_level_runs if run.state in ['running','finished']]
 	game_runs = [run for run in non_crashed if Config.ENVIRONMENT in run.name]
 	wandb_save_dir = '%s/%s'%(Config.RESTORE_PATH,Config.ENVIRONMENT)
-
+	print('Save dir: %s'%wandb_save_dir)
 	if not os.path.isdir(wandb_save_dir):
 		import requests
 		for run in game_runs:
@@ -837,7 +837,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			save_wandb_file('ppo-1.index')
 			save_wandb_file('ppo-1.meta')
 
-			print('Downloaded level id %s' % level_id)
+			print('Downloaded level id %s to %s' % (level_id,run_save_dir) )
 			# wandb.restore(wandb_save_dir+"/checkpoint",run_path='/'.join(run.path))
 
 	# load in just the graph and model parameters outside for-loop
@@ -854,22 +854,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 		lrnow = lr(frac)
 		cliprangenow = cliprange(frac)
 
-		# if Config.CUSTOM_REP_LOSS:
-		#     params = tf.compat.v1.trainable_variables()
-		#     source_params = [p for p in params if p.name in model.train_model.RL_enc_param_names]
-		#     for i in range(1,Config.POLICY_NHEADS):
-		#         target_i_params = [p for p in params if p.name in model.train_model.target_enc_param_names[i]]
-		#         soft_update(source_params,target_i_params,tau=0.95)
-
 		mpi_print('collecting rollouts...')
 		run_tstart = time.time()
-		# if z_iter < 4: # 8 epochs / skill
-		#     z_iter += 1
-		# else:
-		#     # sample new skill for current episodes
-		#     curr_z = np.random.randint(0, high=Config.POLICY_NHEADS)
-		#     model.head_idx_current_batch = curr_z
-		#     z_iter = 0
 
 		packed = runner.run(update_frac=update/nupdates)
 	
@@ -910,9 +896,9 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			actions = np.random.randint(0,15,Config.NUM_ENVS)
 			return actions
 
-
 		model1_path = wandb_save_dir+'/%d/ppo-1'%mdp_1
 		model2_path = wandb_save_dir+'/%d/ppo-1'%mdp_2
+		print('Loading weights from %s'%(wandb_save_dir+'/%d/ppo-1'%mdp_1))
 		# with ppo_graph.as_default():
 		#     ppo_model = ppo(sess, ob_space, ac_space, nbatch_train, nsteps, max_grad_norm, override_agent='ppo')
 		#import ipdb;ipdb.set_trace()
