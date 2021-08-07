@@ -300,11 +300,14 @@ class ConfigSingle(object):
     def set_load_data(self, ld, load_key='default'):
         self.load_data[load_key] = ld
 
+    # The two methods below are modified. Why did they do these stealthy conversions to begin with?
     def process_field(self, name):
-        return name.replace('-','_')
+        # return name.replace('-','_')
+        return name
 
     def deprocess_field(self, name):
-        return name.replace('_','-')
+        # return name.replace('_','-')
+        return name
 
     def parse_all_args(self, args):
         assert isinstance(args, argparse.Namespace), 'expected argparse.Namespace object'
