@@ -354,7 +354,7 @@ class CnnPolicy(object):
         """
         PSEs code
         """
-        contrastive_loss_temperature = 0.5
+        contrastive_loss_temperature = Config.TEMP
         with tf.compat.v1.variable_scope("online", reuse=tf.compat.v1.AUTO_REUSE):
             n_pse = tf.shape(self.pse_obs_1)[0]
             concat_pse_obs = tf.concat([self.pse_obs_1,self.pse_obs_2],0)
@@ -364,7 +364,7 @@ class CnnPolicy(object):
             # PSE loss
             metric_vals = compute_psm_metric(tf.one_hot(self.pse_actions_1,15),tf.one_hot(self.pse_actions_2,15),Config.GAMMA)
             
-            self.contrastive_loss = representation_alignment_loss(
+            self.contrastive_loss = Config.REP_LOSS_WEIGHT * representation_alignment_loss(
                         representation_1,
                         representation_2,
                         metric_vals,

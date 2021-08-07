@@ -924,7 +924,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				sess_1.run(initialize)
 			model_saver = tf.train.import_meta_graph(model1_path+'.meta')
 			model_saver.restore(sess_1, save_path=model1_path)
-			mb_obs_1, mb_actions_1, mb_rewards_1 = collect_data(ppo_model_1,venv_eval_1,nsteps=256, param_vals='pretrained')
+			mb_obs_1, mb_actions_1, mb_rewards_1 = collect_data(ppo_model_1,venv_eval_1,nsteps=32, param_vals='pretrained')
 
 		with tf.Session(graph=ppo_graph_2) as sess_2:
 			with tf.compat.v1.variable_scope("model_2"):
@@ -934,7 +934,7 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 			model_saver = tf.train.import_meta_graph(model2_path+'.meta')
 			model_saver.restore(sess_2, save_path=model2_path)
 
-			mb_obs_2, mb_actions_2, mb_rewards_2 = collect_data(ppo_model_2,venv_eval_2,nsteps=256, param_vals='pretrained')
+			mb_obs_2, mb_actions_2, mb_rewards_2 = collect_data(ppo_model_2,venv_eval_2,nsteps=32, param_vals='pretrained')
 			
 		# mb_obs_1, mb_actions_1, mb_rewards_1 = collect_data(random_policy,venv_eval_1,nsteps=256, param_vals='random')
 		# mb_obs_2, mb_actions_2, mb_rewards_2 = collect_data(random_policy,venv_eval_2,nsteps=256, param_vals='random')
@@ -969,16 +969,17 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 				
 				slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs, rewards))
 
-				slices_pse_1 = (arr[mbinds] for arr in (mb_obs_1, mb_actions_1, mb_rewards_1))
-				slices_pse_2 = (arr[mbinds] for arr in (mb_obs_2, mb_actions_2, mb_rewards_2))
+				slices_pse_1 = (arr for arr in (mb_obs_1, mb_actions_1, mb_rewards_1))
+				slices_pse_2 = (arr for arr in (mb_obs_2, mb_actions_2, mb_rewards_2))
 				
 				mblossvals.append(model.train(lrnow, cliprangenow, *slices, *slices_pse_1, *slices_pse_2, train_target='policy'))
 
 				slices = (arr[mbinds] for arr in (obs, returns, masks, actions, infos, values, neglogpacs, rewards))
-				slices_pse_1 = (arr[mbinds] for arr in (mb_obs_1, mb_actions_1, mb_rewards_1))
-				slices_pse_2 = (arr[mbinds] for arr in (mb_obs_2, mb_actions_2, mb_rewards_2))
-				
-				model.train(lrnow, cliprangenow, *slices, *slices_pse_1, *slices_pse_2, train_target='pse')
+
+			slices_pse_1 = (arr for arr in (mb_obs_1, mb_actions_1, mb_rewards_1))
+			slices_pse_2 = (arr for arr in (mb_obs_2, mb_actions_2, mb_rewards_2))
+            
+			model.train(lrnow, cliprangenow, *slices, *slices_pse_1, *slices_pse_2, train_target='pse')
 		# update the dropout mask
 		sess.run([model.train_model.train_dropout_assign_ops])
 		sess.run([model.train_model.run_dropout_assign_ops])
