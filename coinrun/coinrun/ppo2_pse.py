@@ -807,8 +807,8 @@ def learn(*, policy, env, eval_env, nsteps, total_timesteps, ent_coef, lr,
 	tb_writer = TB_Writer(sess)
 	import os
 	os.environ["WANDB_API_KEY"] = "02e3820b69de1b1fcc645edcfc3dd5c5079839a1"
-	group_name = "%s__%s__%d__%d__%f__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.CLUSTER_T,Config.N_KNN, Config.TEMP, Config.N_SKILLS)
-	name = "%s__%s__%d__%d__%f__%d__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.CLUSTER_T,Config.N_KNN,  Config.TEMP, Config.N_SKILLS, np.random.randint(100000000))
+	group_name = "%s__%s__%f__%f" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT, Config.TEMP)
+	name = "%s__%s__%f__%f__%d" %(Config.ENVIRONMENT,Config.RUN_ID,Config.REP_LOSS_WEIGHT, Config.TEMP, np.random.randint(100000000))
 	wandb.init(project='ising_generalization' if Config.ENVIRONMENT == 'ising' else 'procgen_generalization' , entity='ssl_rl', config=Config.args_dict, group=group_name, name=name, mode="disabled" if Config.DISABLE_WANDB else "online")
 	
 	api = wandb.Api()
